@@ -61,7 +61,8 @@ struct Settings {
 	float defaultMaxGainDb = 12.0f;
 
 	dsp::StatusConfig warnings;
-	bool muteWarning = true; // „Du sprichst, aber dein Mikro ist stumm“
+	bool muteWarning = true;           // „Du sprichst, aber dein Mikro ist stumm“
+	bool desktopHintDismissed = false; // Hinweis „alles läuft über Desktop-Audio“ ausgeblendet
 
 	bool autoByActivity = true; // „Automatisch“ wählt auch nach Aktivität, nicht nur nach Szene
 	std::vector<ScenePreset> scenePresets;

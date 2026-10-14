@@ -55,6 +55,12 @@ target_sources(
     src/filter.hpp
     src/level-meter.cpp
     src/level-meter.hpp
+    src/presets.cpp
+    src/presets.hpp
+    src/roles.cpp
+    src/roles.hpp
+    src/settings-dialog.cpp
+    src/settings-dialog.hpp
     src/settings.cpp
     src/settings.hpp
     src/text.cpp

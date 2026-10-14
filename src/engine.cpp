@@ -19,10 +19,11 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "engine.hpp"
 
 #include "filter.hpp"
+#include "presets.hpp"
+#include "roles.hpp"
 #include "text.hpp"
 
 #include "dsp/analyzer.hpp"
-#include "dsp/regulator.hpp"
 #include "dsp/triple-buffer.hpp"
 
 // obs-module.h muss vor plugin-support.h stehen, sonst kollidiert die blogva-Deklaration
@@ -34,6 +35,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <cctype>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <ctime>
 
 namespace am {
@@ -46,8 +48,13 @@ constexpr double kFilterScanSeconds = 0.5;
 constexpr double kFreshSeconds = 0.6;    // so lange gelten Messwerte als aktuell
 constexpr double kRetireSeconds = 5.0;   // abgemeldete Messpunkte erst so spät freigeben
 constexpr double kVisibleSeconds = 30.0; // so lange nach dem letzten Ton bleibt eine Quelle im Dock
-constexpr size_t kMaxHistory = 100;
+constexpr double kSaveSeconds = 5.0;     // geänderte Einstellungen spätestens so oft speichern
+constexpr double kBlendSeconds = 2.0;    // weicher Übergang beim Ein- und Ausschalten der Regelung
+constexpr double kDuckReportSeconds = 20.0;
 constexpr double kWarningRepeatSeconds = 30.0; // dieselbe Warnung frühestens nach so langer Ruhe erneut
+constexpr float kMutedSpeechSeconds = 1.5f;    // so lange sprechen bei stummem Mikro, bis gewarnt wird
+constexpr float kFaderMoveDb = 0.05f;
+constexpr size_t kMaxHistory = 100;
 constexpr int kMaxChannels = 8;
 constexpr float kActiveLufs = -50.0f;
 
@@ -88,6 +95,19 @@ int audioChannels()
 double audioRate()
 {
 	return static_cast<double>(audio_output_get_sample_rate(obs_get_audio()));
+}
+
+bool hasMixerFilter(obs_source_t *source)
+{
+	bool found = false;
+	obs_source_enum_filters(
+		source,
+		[](obs_source_t *, obs_source_t *filter, void *param) {
+			if (std::strcmp(obs_source_get_unversioned_id(filter), kFilterId) == 0)
+				*static_cast<bool *>(param) = true;
+		},
+		&found);
+	return found;
 }
 
 // Merkt sich, ob Messwerte nachkommen (die Blockzahl ändert sich)
@@ -163,6 +183,7 @@ struct Engine::Entry {
 	std::string uuid;
 	std::string name;
 	std::string type;
+	dsp::Role suggested = dsp::Role::Ignore;
 	OBSWeakSourceAutoRelease weak;
 	std::unique_ptr<CaptureTap> tap;
 
@@ -174,10 +195,17 @@ struct Engine::Entry {
 	dsp::AnalyzerSnapshot filterSnapshot;
 	Freshness tapFresh;
 	Freshness filterFresh;
+	float applied = 0.0f;     // Verstärkung, die der Filter gerade anwendet
+	float limited = 0.0f;     // Absenkung durch den Limiter seit dem letzten Schritt
+	bool reallyMuted = false; // stummgeschaltet (nicht nur Push-to-Talk)
 
 	dsp::Channel channel;
 	dsp::StatusTracker status;
 	double lastSound = -1e9; // Zeitpunkt des letzten hörbaren Tons
+	double lastDuckReport = -1e9;
+	float mutedSpeaking = 0.0f;
+	float lastFaderDb = 0.0f;
+	bool faderKnown = false;
 	SourceView view;
 };
 
@@ -197,6 +225,11 @@ void Engine::start()
 	{
 		std::lock_guard lock(mutex_);
 		settings_ = loadSettings();
+		builtinPresets_ = loadBuiltinPresets();
+		userPresets_ = loadUserPresets();
+		// Ohne Zustimmung nie regeln (z. B. wenn die Einstellungen von Hand geändert wurden)
+		if (!settings_.filterConsent)
+			settings_.mode = Mode::Observe;
 
 		obs_audio_info info = {};
 		obs_get_audio_info(&info);
@@ -217,11 +250,9 @@ void Engine::start()
 	}
 
 	signal_handler_t *signals = obs_get_signal_handler();
-	signal_handler_connect(signals, "source_create", onSourceCreate, this);
-	signal_handler_connect(signals, "source_remove", onSourceRemove, this);
-	signal_handler_connect(signals, "source_rename", onSourceRename, this);
-	signal_handler_connect(signals, "source_filter_add", onFilterChange, this);
-	signal_handler_connect(signals, "source_filter_remove", onFilterChange, this);
+	for (const char *signal :
+	     {"source_create", "source_remove", "source_rename", "source_filter_add", "source_filter_remove"})
+		signal_handler_connect(signals, signal, onSourceEvent, this);
 	{
 		std::lock_guard lock(eventsMutex_);
 		sourcesDirty_ = true;
@@ -242,11 +273,9 @@ void Engine::stop()
 		thread_.join();
 
 	signal_handler_t *signals = obs_get_signal_handler();
-	signal_handler_disconnect(signals, "source_create", onSourceCreate, this);
-	signal_handler_disconnect(signals, "source_remove", onSourceRemove, this);
-	signal_handler_disconnect(signals, "source_rename", onSourceRename, this);
-	signal_handler_disconnect(signals, "source_filter_add", onFilterChange, this);
-	signal_handler_disconnect(signals, "source_filter_remove", onFilterChange, this);
+	for (const char *signal :
+	     {"source_create", "source_remove", "source_rename", "source_filter_add", "source_filter_remove"})
+		signal_handler_disconnect(signals, signal, onSourceEvent, this);
 
 	std::lock_guard lock(mutex_);
 	for (auto &[uuid, entry] : entries_)
@@ -299,13 +328,198 @@ void Engine::setSettings(const Settings &settings)
 {
 	std::lock_guard lock(mutex_);
 	settings_ = settings;
+	if (!settings_.filterConsent)
+		settings_.mode = Mode::Observe;
 	saveSettings(settings_);
+	settingsDirty_ = false;
+}
+
+void Engine::setEnabled(bool enabled)
+{
+	std::lock_guard lock(mutex_);
+	if (settings_.enabled == enabled)
+		return;
+	settings_.enabled = enabled;
+	pushHistory(text(enabled ? "AutoMixer.History.Enabled" : "AutoMixer.History.Paused"));
+	settingsDirty_ = true;
+}
+
+void Engine::setMode(Mode mode)
+{
+	std::lock_guard lock(mutex_);
+	if (mode == Mode::Regulate && !settings_.filterConsent)
+		return; // erst nach Zustimmung (attachFilters)
+	if (settings_.mode == mode)
+		return;
+	settings_.mode = mode;
+	pushHistory(textf("AutoMixer.History.Mode",
+			  text(mode == Mode::Regulate ? "AutoMixer.Mode.Regulate" : "AutoMixer.Mode.Observe")));
+	settingsDirty_ = true;
+}
+
+void Engine::selectPreset(const std::string &id)
+{
+	std::lock_guard lock(mutex_);
+	if (settings_.preset == id)
+		return;
+	settings_.preset = id;
+	const dsp::Preset *preset = findPreset(effectivePresetId());
+	if (id == "auto")
+		pushHistory(text("AutoMixer.History.PresetAuto"));
+	else if (preset)
+		pushHistory(textf("AutoMixer.History.Preset", preset->name.c_str()));
+	settingsDirty_ = true;
+}
+
+void Engine::setRole(const std::string &uuid, dsp::Role role)
+{
+	std::lock_guard lock(mutex_);
+	auto it = entries_.find(uuid);
+	SourceSettings *source = it != entries_.end() ? &sourceSettings(*it->second) : settings_.findSource(uuid, "");
+	if (!source)
+		return;
+	source->role = role;
+	source->roleChosen = true;
+	settingsDirty_ = true;
+}
+
+void Engine::setLocked(const std::string &uuid, bool locked)
+{
+	std::lock_guard lock(mutex_);
+	auto it = entries_.find(uuid);
+	SourceSettings *source = it != entries_.end() ? &sourceSettings(*it->second) : settings_.findSource(uuid, "");
+	if (!source || source->locked == locked)
+		return;
+	source->locked = locked;
+	pushHistory(textf(locked ? "AutoMixer.History.Locked" : "AutoMixer.History.Unlocked", source->name.c_str()));
+	settingsDirty_ = true;
+}
+
+std::vector<dsp::Preset> Engine::presets() const
+{
+	std::lock_guard lock(mutex_);
+	std::vector<dsp::Preset> all = builtinPresets_;
+	all.insert(all.end(), userPresets_.begin(), userPresets_.end());
+	return all;
+}
+
+std::vector<dsp::Preset> Engine::userPresets() const
+{
+	std::lock_guard lock(mutex_);
+	return userPresets_;
+}
+
+void Engine::setUserPresets(const std::vector<dsp::Preset> &presets)
+{
+	std::lock_guard lock(mutex_);
+	userPresets_ = presets;
+	for (dsp::Preset &preset : userPresets_)
+		preset.builtin = false;
+	saveUserPresets(userPresets_);
+}
+
+dsp::Preset Engine::activePreset() const
+{
+	std::lock_guard lock(mutex_);
+	const dsp::Preset *preset = findPreset(effectivePresetId());
+	return preset ? *preset : fallbackPreset();
+}
+
+std::vector<KnownSource> Engine::knownSources() const
+{
+	std::lock_guard lock(mutex_);
+	std::vector<KnownSource> list;
+	for (const auto &[uuid, entry] : entries_) {
+		KnownSource known;
+		known.uuid = uuid;
+		known.name = entry->name;
+		known.type = entry->type;
+		known.suggested = entry->suggested;
+		known.hasFilter = entry->filter != nullptr;
+		known.role = entry->channel.in.role;
+		known.locked = entry->channel.in.locked;
+		known.minGainDb = entry->channel.in.minGainDb;
+		known.maxGainDb = entry->channel.in.maxGainDb;
+		list.push_back(known);
+	}
+	std::sort(list.begin(), list.end(),
+		  [](const KnownSource &a, const KnownSource &b) { return lowercase(a.name) < lowercase(b.name); });
+	return list;
+}
+
+std::vector<std::string> Engine::attachFilters(bool dryRun)
+{
+	std::lock_guard lock(mutex_);
+	std::vector<std::string> names;
+	for (auto &[uuid, entry] : entries_) {
+		if (sourceSettings(*entry).role == dsp::Role::Ignore)
+			continue;
+		OBSSourceAutoRelease source = obs_weak_source_get_source(entry->weak);
+		if (!source || hasMixerFilter(source))
+			continue;
+		names.push_back(entry->name);
+		if (dryRun)
+			continue;
+		// Ans Ende der Filterkette: OBS fügt neue Filter dort ein
+		OBSSourceAutoRelease filter = obs_source_create_private(kFilterId, text("AutoMixer.Filter"), nullptr);
+		if (filter)
+			obs_source_filter_add(source, filter);
+		entry->sinceFilterScan = 1e9;
+	}
+	if (!dryRun) {
+		settings_.filterConsent = true;
+		settingsDirty_ = true;
+		if (!names.empty()) {
+			pushHistory(textf("AutoMixer.History.FiltersAdded", static_cast<int>(names.size())));
+			obs_log(LOG_INFO, "Filter an %d Quellen angehängt", static_cast<int>(names.size()));
+		}
+	}
+	return names;
+}
+
+int Engine::removeAllFilters()
+{
+	std::lock_guard lock(mutex_);
+	std::vector<std::pair<OBSSource, OBSSource>> found; // Quelle, Filter
+	obs_enum_sources(
+		[](void *param, obs_source_t *source) {
+			obs_source_enum_filters(
+				source,
+				[](obs_source_t *parent, obs_source_t *filter, void *list) {
+					if (std::strcmp(obs_source_get_unversioned_id(filter), kFilterId) == 0)
+						static_cast<std::vector<std::pair<OBSSource, OBSSource>> *>(list)
+							->emplace_back(parent, filter);
+				},
+				param);
+			return true;
+		},
+		&found);
+	for (auto &[source, filter] : found)
+		obs_source_filter_remove(source, filter);
+	for (auto &[uuid, entry] : entries_) {
+		if (entry->filter)
+			entry->filter->bypass = true;
+		entry->filter.reset();
+		entry->sinceFilterScan = 1e9;
+	}
+	settings_.mode = Mode::Observe;
+	settings_.filterConsent = false;
+	settingsDirty_ = true;
+	pushHistory(textf("AutoMixer.History.FiltersRemoved", static_cast<int>(found.size())));
+	obs_log(LOG_INFO, "Filter von %d Quellen entfernt", static_cast<int>(found.size()));
+	return static_cast<int>(found.size());
 }
 
 void Engine::setStreamMixers(uint32_t mixers)
 {
 	std::lock_guard lock(mutex_);
 	streamMixers_ = mixers;
+}
+
+void Engine::setCurrentScene(const std::string &scene)
+{
+	std::lock_guard lock(mutex_);
+	currentScene_ = scene;
 }
 
 void Engine::addHistory(const std::string &text)
@@ -377,9 +591,17 @@ void Engine::tick(double dt)
 		++it;
 	}
 
+	regulate(dt);
 	updateTracks(dt);
-	updateWarnings();
+	updateWarnings(dt);
 	buildView();
+
+	sinceSave_ += dt;
+	if (settingsDirty_ && sinceSave_ >= kSaveSeconds) {
+		saveSettings(settings_);
+		settingsDirty_ = false;
+		sinceSave_ = 0.0;
+	}
 }
 
 void Engine::syncSources()
@@ -408,6 +630,7 @@ void Engine::addSource(obs_source_t *source)
 		return;
 	entry->name = obs_source_get_name(source);
 	entry->type = obs_source_get_unversioned_id(source);
+	entry->suggested = suggestRole(source);
 	entry->weak = obs_source_get_weak_source(source);
 
 	entry->tap = std::make_unique<CaptureTap>();
@@ -415,6 +638,7 @@ void Engine::addSource(obs_source_t *source)
 	entry->tap->analyzer.configure(audioRate(), entry->tap->channels);
 	obs_source_add_audio_capture_callback(source, CaptureTap::callback, entry->tap.get());
 
+	sourceSettings(*entry); // legt die Einstellungen mit der vorgeschlagenen Rolle an
 	const std::string uuid = entry->uuid;
 	entries_[uuid] = std::move(entry);
 }
@@ -451,10 +675,51 @@ void Engine::collectRetired(bool all)
 		       retired_.end());
 }
 
+SourceSettings &Engine::sourceSettings(const Entry &entry)
+{
+	SourceSettings *source = settings_.findSource(entry.uuid, entry.name);
+	if (!source) {
+		SourceSettings created;
+		created.uuid = entry.uuid;
+		created.name = entry.name;
+		created.role = entry.suggested;
+		created.minGainDb = settings_.defaultMinGainDb;
+		created.maxGainDb = settings_.defaultMaxGainDb;
+		settings_.sources.push_back(created);
+		settingsDirty_ = true;
+		return settings_.sources.back();
+	}
+	// Umbenannt oder per Name wiedergefunden (neue UUID): festhalten
+	if (source->uuid != entry.uuid || source->name != entry.name) {
+		source->uuid = entry.uuid;
+		source->name = entry.name;
+		settingsDirty_ = true;
+	}
+	return *source;
+}
+
+const dsp::Preset *Engine::findPreset(const std::string &id) const
+{
+	for (const dsp::Preset &preset : builtinPresets_) {
+		if (preset.id == id)
+			return &preset;
+	}
+	for (const dsp::Preset &preset : userPresets_) {
+		if (preset.id == id)
+			return &preset;
+	}
+	return builtinPresets_.empty() ? nullptr : &builtinPresets_.front();
+}
+
+std::string Engine::effectivePresetId() const
+{
+	return settings_.preset;
+}
+
 void Engine::updateEntry(Entry &entry, obs_source_t *source, double dt)
 {
-	const float step = static_cast<float>(dt);
 	entry.name = obs_source_get_name(source);
+	const SourceSettings config = sourceSettings(entry);
 
 	// Auto-Mixer-Filter suchen (er misst dann selbst, vor seiner Verstärkung)
 	entry.sinceFilterScan += dt;
@@ -491,18 +756,39 @@ void Engine::updateEntry(Entry &entry, obs_source_t *source, double dt)
 	entry.tap->analyze = !filterFresh;
 	const dsp::AnalyzerSnapshot &snap = filterFresh ? entry.filterSnapshot : entry.tapSnapshot;
 	const bool present = filterFresh || tapFresh;
-	const float applied = filterFresh ? entry.filter->appliedGainDb.load(std::memory_order_relaxed) : 0.0f;
-	const float limited = filterFresh ? entry.filter->limiterDb.exchange(0.0f, std::memory_order_relaxed) : 0.0f;
+	entry.applied = filterFresh ? entry.filter->appliedGainDb.load(std::memory_order_relaxed) : 0.0f;
+	entry.limited = filterFresh ? entry.filter->limiterDb.exchange(0.0f, std::memory_order_relaxed) : 0.0f;
 
 	// Zustand in OBS
 	const float faderDb = faderToDb(obs_source_get_volume(source));
-	const bool muted = obs_source_muted(source) || entry.tap->muted.load(std::memory_order_relaxed);
+	entry.reallyMuted = obs_source_muted(source);
+	const bool muted = entry.reallyMuted || entry.tap->muted.load(std::memory_order_relaxed);
 	const bool inProgram = obs_source_active(source);
 	const bool inMix = obs_source_get_audio_mixers(source) != 0 &&
 			   obs_source_get_monitoring_type(source) != OBS_MONITORING_TYPE_MONITOR_ONLY;
 	const bool audible = present && inProgram && inMix && !muted && faderDb > -90.0f;
 
+	// Fader bewegt? Dann gehört die Quelle dem Nutzer, bis er sie wieder freigibt
+	bool locked = config.locked;
+	if (!entry.faderKnown) {
+		entry.lastFaderDb = faderDb;
+		entry.faderKnown = true;
+	} else if (std::fabs(faderDb - entry.lastFaderDb) > kFaderMoveDb) {
+		entry.lastFaderDb = faderDb;
+		if (settings_.lockOnFader && regulating() && config.role != dsp::Role::Ignore && !locked &&
+		    entry.filter) {
+			sourceSettings(entry).locked = true;
+			locked = true;
+			settingsDirty_ = true;
+			pushHistory(textf("AutoMixer.History.LockedByFader", entry.name.c_str()));
+		}
+	}
+
 	dsp::ChannelInput &in = entry.channel.in;
+	in.role = config.role;
+	in.locked = locked;
+	in.minGainDb = config.minGainDb;
+	in.maxGainDb = config.maxGainDb;
 	in.present = present;
 	in.audible = audible;
 	in.block = snap.block;
@@ -517,10 +803,12 @@ void Engine::updateEntry(Entry &entry, obs_source_t *source, double dt)
 
 	// So kommt es im Mix an: Eingang + Anpassung + Fader
 	SourceView &view = entry.view;
-	const float offset = applied + faderDb;
+	const float offset = entry.applied + faderDb;
 	view.uuid = entry.uuid;
 	view.name = entry.name;
 	view.type = entry.type;
+	view.role = config.role;
+	view.locked = locked;
 	view.hasFilter = entry.filter && entry.filterEnabled;
 	view.inProgram = inProgram;
 	view.muted = muted;
@@ -528,14 +816,85 @@ void Engine::updateEntry(Entry &entry, obs_source_t *source, double dt)
 	view.speaking = in.speaking;
 	view.momentary = present ? offsetLevel(snap.momentary, offset) : dsp::kSilence;
 	view.shortTerm = present ? offsetLevel(snap.shortTerm, offset) : dsp::kSilence;
-	view.truePeak = present ? offsetLevel(snap.truePeak, offset + limited) : dsp::kSilence;
-	view.gainDb = applied;
+	view.truePeak = present ? offsetLevel(snap.truePeak, offset + entry.limited) : dsp::kSilence;
+	view.gainDb = entry.applied;
 	view.faderDb = faderDb;
 	if (present && snap.momentary > kActiveLufs)
 		entry.lastSound = clock_;
+}
 
-	const bool active = audible && view.momentary > kActiveLufs;
-	view.status = entry.status.update(step, active, view.shortTerm, view.targetLufs, view.truePeak, false);
+void Engine::regulate(double dt)
+{
+	const dsp::Preset *preset = findPreset(effectivePresetId());
+	regulator_.setPreset(preset ? *preset : fallbackPreset());
+	dsp::RegulatorConfig config = regulator_.config();
+	config.referenceLufs = settings_.voiceTargetLufs;
+	config.ceilingDbtp = settings_.ceilingDbtp;
+	regulator_.setConfig(config);
+
+	std::vector<dsp::Channel *> channels;
+	channels.reserve(entries_.size());
+	for (auto &[uuid, entry] : entries_)
+		channels.push_back(&entry->channel);
+	regulator_.update(dt, channels.data(), channels.size());
+
+	// Weicher Übergang beim Ein- und Ausschalten: nie ein Sprung im Pegel
+	const float step = static_cast<float>(dt / kBlendSeconds);
+	blend_ = regulating() ? std::min(1.0f, blend_ + step) : std::max(0.0f, blend_ - step);
+
+	for (auto &[uuid, entry] : entries_) {
+		const dsp::ChannelState &state = entry->channel.state;
+		if (entry->filter) {
+			entry->filter->gainDb.store(state.gainDb * blend_, std::memory_order_relaxed);
+			entry->filter->ceilingDb.store(settings_.ceilingDbtp, std::memory_order_relaxed);
+			entry->filter->limiter.store(true, std::memory_order_relaxed);
+			entry->filter->bypass.store(blend_ <= 0.0f, std::memory_order_relaxed);
+		}
+		reportEvents(*entry);
+
+		// Status gegen das Ziel; Ducking und Schreischutz senken das Ziel bewusst ab
+		SourceView &view = entry->view;
+		const dsp::ChannelInput &in = entry->channel.in;
+		const bool speech = dsp::isSpeechRole(in.role);
+		const float offset = entry->applied + view.faderDb;
+		const float level = speech && !dsp::isSilent(in.speech) ? offsetLevel(in.speech, offset)
+									: view.shortTerm;
+		const bool active = in.audible && (speech ? in.speaking : view.momentary > kActiveLufs);
+		const float target = dsp::isSilent(state.targetLufs)
+					     ? dsp::kSilence
+					     : state.targetLufs + (state.duckGain + state.guardGain) * blend_;
+		entry->status.setConfig(settings_.warnings);
+		view.targetLufs = state.targetLufs;
+		view.suggestedGainDb = state.gainDb;
+		view.status = entry->status.update(static_cast<float>(dt), active, level, target, view.truePeak, false);
+	}
+}
+
+void Engine::reportEvents(Entry &entry)
+{
+	const dsp::ChannelState &state = entry.channel.state;
+	if (!state.events)
+		return;
+	const bool applied = blend_ > 0.5f && entry.filter;
+	const char *name = entry.name.c_str();
+	if ((state.events & dsp::kEventDuckStart) && applied && clock_ - entry.lastDuckReport > kDuckReportSeconds) {
+		// Wer spricht: du (Stimme) oder jemand im Chat?
+		const bool you = std::any_of(entries_.begin(), entries_.end(), [](const auto &item) {
+			const dsp::ChannelInput &in = item.second->channel.in;
+			return in.role == dsp::Role::Voice && in.speaking && in.audible;
+		});
+		pushHistory(textf(you ? "AutoMixer.History.Ducking" : "AutoMixer.History.DuckingChat", name,
+				  formatDb(std::fabs(state.eventDb), false).c_str()));
+		entry.lastDuckReport = clock_;
+	}
+	if ((state.events & dsp::kEventGuard) && applied)
+		pushHistory(textf("AutoMixer.History.Guard", name, formatDb(std::fabs(state.eventDb), false).c_str()));
+	if (state.events & (dsp::kEventLevelDown | dsp::kEventLevelUp)) {
+		const bool down = state.events & dsp::kEventLevelDown;
+		const char *key = applied ? (down ? "AutoMixer.History.LevelDown" : "AutoMixer.History.LevelUp")
+					  : (down ? "AutoMixer.History.SuggestDown" : "AutoMixer.History.SuggestUp");
+		pushHistory(textf(key, name, formatDb(std::fabs(state.eventDb), false).c_str()));
+	}
 }
 
 void Engine::updateTracks(double dt)
@@ -577,19 +936,45 @@ int Engine::streamTrack() const
 	return 1;
 }
 
-void Engine::updateWarnings()
+void Engine::updateWarnings(double dt)
 {
 	std::vector<Warning> warnings;
 	const int track = streamTrack();
 	const TrackView &stream = trackViews_[static_cast<size_t>(track - 1)];
 	if (stream.status == dsp::Status::TooLoud)
-		warnings.push_back({WarningKind::MixTooLoud,
-				    trf("AutoMixer.Warning.MixTooLoud", track, formatLufs(stream.shortTerm).c_str())});
+		warnings.push_back({WarningKind::MixTooLoud, textf("AutoMixer.Warning.MixTooLoud", track,
+								   formatLufs(stream.shortTerm).c_str())});
 	if (stream.status == dsp::Status::Clipping)
-		warnings.push_back({WarningKind::MixClipping, trf("AutoMixer.Warning.MixClipping", track)});
+		warnings.push_back({WarningKind::MixClipping, textf("AutoMixer.Warning.MixClipping", track)});
+
+	// „Du sprichst, aber dein Mikro ist stumm“: stummgeschaltet (nicht Push-to-Talk) und trotzdem Sprache
+	bool desktopActive = false;
+	bool separated = false;
+	for (auto &[uuid, entry] : entries_) {
+		const dsp::ChannelInput &in = entry->channel.in;
+		if (in.role == dsp::Role::Voice) {
+			const bool speakingMuted = entry->reallyMuted && in.speaking;
+			entry->mutedSpeaking =
+				speakingMuted ? entry->mutedSpeaking + static_cast<float>(dt)
+					      : std::max(0.0f, entry->mutedSpeaking - 2.0f * static_cast<float>(dt));
+			if (settings_.muteWarning && entry->mutedSpeaking >= kMutedSpeechSeconds)
+				warnings.push_back({WarningKind::MicMuted,
+						    textf("AutoMixer.Warning.MicMuted", entry->name.c_str())});
+		}
+		const bool recent = clock_ - entry->lastSound < 60.0;
+		if (in.role == dsp::Role::Desktop && in.audible && clock_ - entry->lastSound < 10.0)
+			desktopActive = true;
+		if ((in.role == dsp::Role::Game || in.role == dsp::Role::Chat || in.role == dsp::Role::Music) && recent)
+			separated = true;
+	}
+	// Läuft alles über Desktop-Audio, lassen sich Spiel, Musik und Discord nicht trennen
+	if (desktopActive && !separated && !settings_.desktopHintDismissed)
+		warnings.push_back({WarningKind::DesktopOnly, text("AutoMixer.Warning.DesktopOnly"), false});
 
 	// Neue Warnungen auch im Verlauf festhalten, aber eine wiederkehrende nicht jedes Mal
 	for (const Warning &warning : warnings) {
+		if (!warning.severe)
+			continue;
 		auto logged = warningLogged_.find(warning.kind);
 		if (logged == warningLogged_.end() || clock_ - logged->second > kWarningRepeatSeconds)
 			pushHistory(warning.text);
@@ -604,19 +989,28 @@ void Engine::buildView()
 	view_.enabled = settings_.enabled;
 	view_.mode = settings_.mode;
 	view_.presetId = settings_.preset;
+	view_.activePresetId = effectivePresetId();
 	view_.streamTrack = streamTrack();
 	view_.mixTargetLufs = settings_.mixTargetLufs;
 	view_.tracks = trackViews_;
 	view_.warnings = warnings_;
 
 	view_.sources.clear();
+	view_.filtersMissing = false;
 	for (const auto &[uuid, entry] : entries_) {
-		if (clock_ - entry->lastSound > kVisibleSeconds)
-			continue;
-		view_.sources.push_back(entry->view);
+		const dsp::ChannelInput &in = entry->channel.in;
+		const bool recent = clock_ - entry->lastSound <= kVisibleSeconds;
+		if (in.role != dsp::Role::Ignore && !entry->filter && recent)
+			view_.filtersMissing = true;
+		if (recent)
+			view_.sources.push_back(entry->view);
 	}
-	std::sort(view_.sources.begin(), view_.sources.end(),
-		  [](const SourceView &a, const SourceView &b) { return lowercase(a.name) < lowercase(b.name); });
+	// Erst nach Rolle (Stimme oben), dann nach Name
+	std::sort(view_.sources.begin(), view_.sources.end(), [](const SourceView &a, const SourceView &b) {
+		if (a.role != b.role)
+			return static_cast<int>(a.role) < static_cast<int>(b.role);
+		return lowercase(a.name) < lowercase(b.name);
+	});
 
 	if (view_.historyVersion != historyVersion_) {
 		view_.history.assign(history_.begin(), history_.end());
@@ -624,28 +1018,7 @@ void Engine::buildView()
 	}
 }
 
-void Engine::onSourceCreate(void *param, calldata_t *)
-{
-	auto *engine = static_cast<Engine *>(param);
-	std::lock_guard lock(engine->eventsMutex_);
-	engine->sourcesDirty_ = true;
-}
-
-void Engine::onSourceRemove(void *param, calldata_t *)
-{
-	auto *engine = static_cast<Engine *>(param);
-	std::lock_guard lock(engine->eventsMutex_);
-	engine->sourcesDirty_ = true;
-}
-
-void Engine::onSourceRename(void *param, calldata_t *)
-{
-	auto *engine = static_cast<Engine *>(param);
-	std::lock_guard lock(engine->eventsMutex_);
-	engine->sourcesDirty_ = true;
-}
-
-void Engine::onFilterChange(void *param, calldata_t *)
+void Engine::onSourceEvent(void *param, calldata_t *)
 {
 	auto *engine = static_cast<Engine *>(param);
 	std::lock_guard lock(engine->eventsMutex_);

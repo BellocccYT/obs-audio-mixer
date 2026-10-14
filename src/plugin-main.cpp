@@ -35,6 +35,7 @@ namespace {
 
 am::Engine *g_engine = nullptr;
 QPointer<am::MixerDock> g_dock;
+bool g_callbackRegistered = false;
 
 // OBS blendet neue Plugin-Docks standardmäßig aus (und lässt sie schweben). Beim allerersten Start
 // docken wir es rechts an und zeigen es einmal, danach merkt sich OBS selbst, wo und ob es offen ist.
@@ -95,6 +96,9 @@ void onFrontendEvent(enum obs_frontend_event event, void *)
 		if (g_dock)
 			g_dock->shutdown();
 		g_engine->stop();
+		// Beim Entladen gibt es die Frontend-API nicht mehr; das Abmelden während der Verteilung ist erlaubt
+		obs_frontend_remove_event_callback(onFrontendEvent, nullptr);
+		g_callbackRegistered = false;
 		break;
 	default:
 		break;
@@ -127,6 +131,7 @@ bool obs_module_load(void)
 			delete dock;
 	}
 	obs_frontend_add_event_callback(onFrontendEvent, nullptr);
+	g_callbackRegistered = true;
 
 	obs_log(LOG_INFO, "geladen (Version %s)", PLUGIN_VERSION);
 	return true;
@@ -134,7 +139,8 @@ bool obs_module_load(void)
 
 void obs_module_unload(void)
 {
-	obs_frontend_remove_event_callback(onFrontendEvent, nullptr);
+	if (g_callbackRegistered)
+		obs_frontend_remove_event_callback(onFrontendEvent, nullptr);
 	if (g_engine) {
 		g_engine->stop();
 		delete g_engine;

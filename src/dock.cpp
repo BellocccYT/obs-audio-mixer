@@ -19,15 +19,21 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "dock.hpp"
 
 #include "level-meter.hpp"
+#include "roles.hpp"
+#include "settings-dialog.hpp"
 #include "text.hpp"
 
 #include <QCheckBox>
+#include <QComboBox>
 #include <QDateTime>
 #include <QFontMetrics>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QListWidget>
+#include <QMessageBox>
+#include <QPushButton>
 #include <QScrollArea>
+#include <QToolButton>
 #include <QVBoxLayout>
 
 namespace am {
@@ -39,7 +45,7 @@ constexpr int kValueWidth = 64;
 
 QString qtr(const char *key)
 {
-	return QString::fromUtf8(tr(key));
+	return QString::fromUtf8(text(key));
 }
 
 QString statusText(dsp::Status status)
@@ -58,15 +64,15 @@ QString statusText(dsp::Status status)
 	}
 }
 
-void setStatus(QLabel *label, dsp::Status status)
+void setStatus(QLabel *label, dsp::Status status, const QString &tip = QString())
 {
 	label->setText(QStringLiteral("<span style=\"color:%1\">●</span>").arg(statusColor(status).name()));
-	label->setToolTip(statusText(status));
+	label->setToolTip(tip.isEmpty() ? statusText(status) : tip);
 }
 
-void setElided(QLabel *label, const QString &text)
+void setElided(QLabel *label, const QString &text, int width = kNameWidth)
 {
-	label->setText(label->fontMetrics().elidedText(text, Qt::ElideRight, kNameWidth));
+	label->setText(label->fontMetrics().elidedText(text, Qt::ElideRight, width));
 	label->setToolTip(text);
 }
 
@@ -79,33 +85,70 @@ QLabel *sectionTitle(const char *key)
 	return label;
 }
 
+QLabel *banner(const char *style)
+{
+	auto *label = new QLabel;
+	label->setWordWrap(true);
+	label->setTextFormat(Qt::RichText);
+	label->setStyleSheet(style);
+	label->hide();
+	return label;
+}
+
 } // namespace
 
 MixerDock::MixerDock(Engine *engine, QWidget *parent) : QWidget(parent), engine_(engine)
 {
 	auto *layout = new QVBoxLayout(this);
 
+	// Kopf: Ein/Aus und Preset
 	auto *header = new QHBoxLayout;
 	enabled_ = new QCheckBox(qtr("AutoMixer.Dock.Enabled"));
 	enabled_->setToolTip(qtr("AutoMixer.Dock.Enabled.Tip"));
-	connect(enabled_, &QCheckBox::toggled, this, [this](bool on) {
-		Settings settings = engine_->settings();
-		settings.enabled = on;
-		engine_->setSettings(settings);
+	connect(enabled_, &QCheckBox::toggled, this, [this](bool on) { engine_->setEnabled(on); });
+	preset_ = new QComboBox;
+	preset_->setToolTip(qtr("AutoMixer.Dock.Preset.Tip"));
+	connect(preset_, &QComboBox::activated, this, [this](int index) {
+		const QString id = preset_->itemData(index).toString();
+		if (!id.isEmpty())
+			engine_->selectPreset(id.toStdString());
 	});
-	mode_ = new QLabel;
 	header->addWidget(enabled_);
-	header->addStretch();
-	header->addWidget(mode_);
+	header->addWidget(preset_, 1);
 	layout->addLayout(header);
 
-	warnings_ = new QLabel;
-	warnings_->setWordWrap(true);
-	warnings_->setTextFormat(Qt::RichText);
-	warnings_->setStyleSheet("QLabel { background: rgba(229, 62, 62, 45); border-left: 3px solid #e53e3e; "
-				 "border-radius: 3px; padding: 6px; }");
-	warnings_->hide();
+	// Modus und Einstellungen
+	auto *controls = new QHBoxLayout;
+	mode_ = new QComboBox;
+	mode_->addItem(qtr("AutoMixer.Mode.Regulate"), static_cast<int>(Mode::Regulate));
+	mode_->addItem(qtr("AutoMixer.Mode.Observe"), static_cast<int>(Mode::Observe));
+	mode_->setToolTip(qtr("AutoMixer.Dock.Mode.Tip"));
+	connect(mode_, &QComboBox::activated, this, [this](int index) {
+		if (static_cast<Mode>(mode_->itemData(index).toInt()) == Mode::Regulate)
+			requestRegulate();
+		else
+			engine_->setMode(Mode::Observe);
+	});
+	auto *settings = new QPushButton(qtr("AutoMixer.Dock.Settings"));
+	connect(settings, &QPushButton::clicked, this, &MixerDock::openSettings);
+	controls->addWidget(mode_, 1);
+	controls->addWidget(settings);
+	layout->addLayout(controls);
+
+	warnings_ = banner("QLabel { background: rgba(229, 62, 62, 45); border-left: 3px solid #e53e3e; "
+			   "border-radius: 3px; padding: 6px; }");
 	layout->addWidget(warnings_);
+	hint_ = banner("QLabel { background: rgba(227, 160, 8, 40); border-left: 3px solid #e3a008; "
+		       "border-radius: 3px; padding: 6px; }");
+	hint_->setOpenExternalLinks(false);
+	connect(hint_, &QLabel::linkActivated, this, [this](const QString &link) {
+		if (link == QStringLiteral("dismiss")) {
+			Settings s = engine_->settings();
+			s.desktopHintDismissed = true;
+			engine_->setSettings(s);
+		}
+	});
+	layout->addWidget(hint_);
 
 	layout->addWidget(sectionTitle("AutoMixer.Dock.Tracks"));
 	tracksBox_ = new QWidget;
@@ -121,7 +164,7 @@ MixerDock::MixerDock(Engine *engine, QWidget *parent) : QWidget(parent), engine_
 	sourcesBox_ = new QWidget;
 	sourcesLayout_ = new QVBoxLayout(sourcesBox_);
 	sourcesLayout_->setContentsMargins(0, 0, 0, 0);
-	sourcesLayout_->setSpacing(2);
+	sourcesLayout_->setSpacing(4);
 	noSources_ = new QLabel(qtr("AutoMixer.Dock.NoSources"));
 	noSources_->setWordWrap(true);
 	sourcesLayout_->addWidget(noSources_);
@@ -140,17 +183,49 @@ MixerDock::MixerDock(Engine *engine, QWidget *parent) : QWidget(parent), engine_
 	refresh();
 }
 
-DockRow MixerDock::makeRow(QWidget *parent)
+void MixerDock::requestRegulate()
+{
+	const Settings settings = engine_->settings();
+	const std::vector<std::string> missing = engine_->attachFilters(true);
+	if (!settings.filterConsent || !missing.empty()) {
+		QStringList names;
+		for (const std::string &name : missing)
+			names << QStringLiteral("• ") + QString::fromStdString(name).toHtmlEscaped();
+		QMessageBox box(QMessageBox::Question, qtr("AutoMixer"), qtr("AutoMixer.Consent.Title"),
+				QMessageBox::NoButton, this);
+		box.setTextFormat(Qt::RichText);
+		box.setInformativeText(
+			QString::fromUtf8(text("AutoMixer.Consent.Text"))
+				.arg(names.isEmpty() ? qtr("AutoMixer.Consent.None") : names.join("<br>")));
+		QPushButton *yes = box.addButton(qtr("AutoMixer.Consent.Yes"), QMessageBox::AcceptRole);
+		box.addButton(qtr("AutoMixer.Consent.No"), QMessageBox::RejectRole);
+		box.exec();
+		if (box.clickedButton() != yes) {
+			refresh();
+			return;
+		}
+		engine_->attachFilters();
+	}
+	engine_->setMode(Mode::Regulate);
+	refresh();
+}
+
+void MixerDock::openSettings()
+{
+	SettingsDialog::open(engine_, this);
+}
+
+DockRow MixerDock::makeTrackRow()
 {
 	DockRow row;
-	row.widget = new QWidget(parent);
+	row.widget = new QWidget(tracksBox_);
 	auto *layout = new QHBoxLayout(row.widget);
 	layout->setContentsMargins(0, 1, 0, 1);
 	row.name = new QLabel;
 	row.name->setFixedWidth(kNameWidth);
 	row.meter = new LevelMeter;
 	row.value = new QLabel;
-	row.value->setFixedWidth(kValueWidth);
+	row.value->setFixedWidth(kValueWidth + 12);
 	row.value->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
 	row.status = new QLabel;
 	row.status->setTextFormat(Qt::RichText);
@@ -161,23 +236,115 @@ DockRow MixerDock::makeRow(QWidget *parent)
 	return row;
 }
 
+DockRow MixerDock::makeSourceRow(const std::string &uuid)
+{
+	DockRow row;
+	row.widget = new QWidget(sourcesBox_);
+	auto *outer = new QVBoxLayout(row.widget);
+	outer->setContentsMargins(0, 2, 0, 2);
+	outer->setSpacing(1);
+
+	// Zeile 1: Name, Rolle, Schloss
+	auto *top = new QHBoxLayout;
+	row.name = new QLabel;
+	row.role = new QComboBox;
+	for (int i = 0; i < dsp::kRoleCount; i++)
+		row.role->addItem(QString::fromUtf8(roleName(static_cast<dsp::Role>(i))), i);
+	row.role->setToolTip(qtr("AutoMixer.Dock.Role.Tip"));
+	row.lock = new QToolButton;
+	row.lock->setCheckable(true);
+	row.lock->setAutoRaise(true);
+	row.lock->setToolTip(qtr("AutoMixer.Dock.Lock.Tip"));
+	top->addWidget(row.name, 1);
+	top->addWidget(row.role);
+	top->addWidget(row.lock);
+	outer->addLayout(top);
+
+	// Zeile 2: Pegel mit Zielmarke, Anpassung, Status
+	auto *bottom = new QHBoxLayout;
+	row.meter = new LevelMeter;
+	row.value = new QLabel;
+	row.value->setFixedWidth(kValueWidth);
+	row.value->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+	row.status = new QLabel;
+	row.status->setTextFormat(Qt::RichText);
+	bottom->addWidget(row.meter, 1);
+	bottom->addWidget(row.value);
+	bottom->addWidget(row.status);
+	outer->addLayout(bottom);
+
+	connect(row.role, &QComboBox::activated, this, [this, uuid, combo = row.role](int index) {
+		engine_->setRole(uuid, static_cast<dsp::Role>(combo->itemData(index).toInt()));
+	});
+	connect(row.lock, &QToolButton::clicked, this,
+		[this, uuid](bool checked) { engine_->setLocked(uuid, checked); });
+	return row;
+}
+
 void MixerDock::refresh()
 {
 	const EngineView view = engine_->view();
 
-	const QSignalBlocker blocker(enabled_);
-	enabled_->setChecked(view.enabled);
-	mode_->setText(view.mode == Mode::Regulate ? qtr("AutoMixer.Mode.Regulate") : qtr("AutoMixer.Mode.Observe"));
+	{
+		const QSignalBlocker blocker(enabled_);
+		enabled_->setChecked(view.enabled);
+	}
+	if (!mode_->view()->isVisible()) {
+		const QSignalBlocker blocker(mode_);
+		mode_->setCurrentIndex(mode_->findData(static_cast<int>(view.mode)));
+	}
+	updatePresets(view);
 
 	QStringList warnings;
-	for (const Warning &warning : view.warnings)
-		warnings << QString::fromStdString(warning.text).toHtmlEscaped();
+	QStringList hints;
+	for (const Warning &warning : view.warnings) {
+		const QString text = QString::fromStdString(warning.text).toHtmlEscaped();
+		if (warning.severe)
+			warnings << text;
+		else if (warning.kind == WarningKind::DesktopOnly)
+			hints << text + QStringLiteral("<br>") + qtr("AutoMixer.Warning.DesktopOnly.Help") +
+					 QStringLiteral(" <a href=\"dismiss\">") + qtr("AutoMixer.Dock.Dismiss") +
+					 QStringLiteral("</a>");
+		else
+			hints << text;
+	}
 	warnings_->setVisible(!warnings.isEmpty());
 	warnings_->setText(QStringLiteral("⚠ ") + warnings.join(QStringLiteral("<br>⚠ ")));
+	hint_->setVisible(!hints.isEmpty());
+	hint_->setText(hints.join(QStringLiteral("<br>")));
+
+	// Im Modus „Regeln“ bekommen neue Quellen mit Rolle den Filter automatisch (Zustimmung liegt vor)
+	sinceAttach_ += 0.1;
+	if (view.mode == Mode::Regulate && view.filtersMissing && sinceAttach_ > 2.0) {
+		sinceAttach_ = 0.0;
+		engine_->attachFilters();
+	}
 
 	updateTracks(view);
 	updateSources(view);
 	updateHistory(view);
+}
+
+void MixerDock::updatePresets(const EngineView &view)
+{
+	const std::vector<dsp::Preset> presets = engine_->presets();
+	std::vector<std::string> ids;
+	for (const dsp::Preset &preset : presets)
+		ids.push_back(preset.id);
+	if (ids != presetIds_) {
+		const QSignalBlocker blocker(preset_);
+		preset_->clear();
+		for (const dsp::Preset &preset : presets) {
+			preset_->addItem(QString::fromStdString(preset.name), QString::fromStdString(preset.id));
+			preset_->setItemData(preset_->count() - 1, QString::fromStdString(preset.description),
+					     Qt::ToolTipRole);
+		}
+		presetIds_ = ids;
+	}
+	if (!preset_->view()->isVisible()) {
+		const QSignalBlocker blocker(preset_);
+		preset_->setCurrentIndex(preset_->findData(QString::fromStdString(view.presetId)));
+	}
 }
 
 void MixerDock::updateTracks(const EngineView &view)
@@ -194,13 +361,18 @@ void MixerDock::updateTracks(const EngineView &view)
 			continue;
 		}
 		if (it == trackRows_.end()) {
-			it = trackRows_.emplace(i, makeRow(tracksBox_)).first;
-			tracksLayout_->insertWidget(std::min(i, tracksLayout_->count()), it->second.widget);
+			it = trackRows_.emplace(i, makeTrackRow()).first;
+			int index = 0;
+			for (const auto &[other, row] : trackRows_) {
+				if (other < i)
+					index++;
+			}
+			tracksLayout_->insertWidget(index, it->second.widget);
 		}
 		DockRow &row = it->second;
 		row.widget->show();
-		const QString name = stream ? QString::fromStdString(trf("AutoMixer.Dock.StreamTrack", i + 1))
-					    : QString::fromStdString(trf("AutoMixer.Dock.Track", i + 1));
+		const QString name = stream ? QString::fromStdString(textf("AutoMixer.Dock.StreamTrack", i + 1))
+					    : QString::fromStdString(textf("AutoMixer.Dock.Track", i + 1));
 		setElided(row.name, name);
 		row.meter->setLevels(track.momentary, track.shortTerm, track.truePeak, view.mixTargetLufs, track.status,
 				     false);
@@ -226,7 +398,7 @@ void MixerDock::updateSources(const EngineView &view)
 	}
 	for (const SourceView &source : view.sources) {
 		if (sourceRows_.find(source.uuid) == sourceRows_.end())
-			sourceRows_.emplace(source.uuid, makeRow(sourcesBox_));
+			sourceRows_.emplace(source.uuid, makeSourceRow(source.uuid));
 	}
 	// Reihenfolge neu aufbauen, wenn sie sich geändert hat
 	if (order != sourceOrder_) {
@@ -239,20 +411,41 @@ void MixerDock::updateSources(const EngineView &view)
 	}
 	noSources_->setVisible(view.sources.empty());
 
+	const bool regulating = view.enabled && view.mode == Mode::Regulate;
 	for (const SourceView &source : view.sources) {
 		DockRow &row = sourceRows_[source.uuid];
-		setElided(row.name, QString::fromStdString(source.name));
+		setElided(row.name, QString::fromStdString(source.name), 160);
+		if (!row.role->view()->isVisible()) {
+			const QSignalBlocker blocker(row.role);
+			row.role->setCurrentIndex(row.role->findData(static_cast<int>(source.role)));
+		}
+		row.lock->setChecked(source.locked);
+		row.lock->setText(source.locked ? QStringLiteral("🔒") : QStringLiteral("🔓"));
 		row.meter->setLevels(source.momentary, source.shortTerm, source.truePeak, source.targetLufs,
 				     source.status, !source.inProgram || source.muted);
-		row.value->setText(source.hasFilter ? QString::fromStdString(formatDb(source.gainDb))
-						    : QStringLiteral("–"));
-		row.value->setToolTip(
-			qtr(source.hasFilter ? "AutoMixer.Dock.Gain.Tip" : "AutoMixer.Dock.NoFilter.Tip"));
-		setStatus(row.status, source.status);
+
+		// Anpassung: angewendet, sonst als Vorschlag in Klammern
+		if (source.role == dsp::Role::Ignore) {
+			row.value->setText(QStringLiteral("–"));
+			row.value->setToolTip(qtr("AutoMixer.Dock.Ignored.Tip"));
+		} else if (regulating && source.hasFilter) {
+			row.value->setText(QString::fromStdString(formatDb(source.gainDb)));
+			row.value->setToolTip(qtr("AutoMixer.Dock.Gain.Tip"));
+		} else {
+			row.value->setText(QStringLiteral("(") +
+					   QString::fromStdString(formatDb(source.suggestedGainDb)) +
+					   QStringLiteral(")"));
+			row.value->setToolTip(qtr("AutoMixer.Dock.Suggestion.Tip"));
+		}
+
+		QString tip;
 		if (source.muted)
-			row.status->setToolTip(qtr("AutoMixer.Status.Muted"));
+			tip = qtr("AutoMixer.Status.Muted");
 		else if (!source.inProgram)
-			row.status->setToolTip(qtr("AutoMixer.Status.NotInProgram"));
+			tip = qtr("AutoMixer.Status.NotInProgram");
+		else if (source.locked)
+			tip = qtr("AutoMixer.Status.Locked");
+		setStatus(row.status, source.status, tip);
 	}
 }
 

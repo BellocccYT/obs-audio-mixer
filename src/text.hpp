@@ -23,10 +23,10 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 namespace am {
 
 // Übersetzter Text aus data/locale/*.ini
-const char *tr(const char *key);
+const char *text(const char *key);
 
-// Übersetzter Text mit printf-Platzhaltern, z. B. trf("AutoMixer.History.Ducking", "Spiel", 4.0)
-std::string trf(const char *key, ...);
+// Übersetzter Text mit printf-Platzhaltern, z. B. textf("AutoMixer.History.Ducking", "Spiel", 4.0)
+std::string textf(const char *key, ...);
 
 // „+3,5 dB“ / „−4 dB“ mit echtem Minuszeichen; Dezimaltrennzeichen je nach Sprache
 std::string formatDb(float db, bool plus = true);

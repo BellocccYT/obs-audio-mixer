@@ -1,0 +1,83 @@
+{
+    "version": 1,
+    "comment": "Startwerte der mitgelieferten Presets. target: Ziel-Lautheit der Hauptrolle (anchor) in LUFS, ausgelegt auf die Referenz −16 LUFS; offsets: Abstand der Rollen zum Ziel in LU; ducking.amount: so viel dB leiser werden die Rollen in ducking.roles (durch Komma getrennt), solange eine der Rollen in ducking.triggers spricht; hold_ms: Wartezeit nach dem Sprechen; speed: slow, normal oder fast.",
+    "presets": [
+        {
+            "id": "voice-first",
+            "name": "Stimme vor Spiel",
+            "description": "Du bist immer klar verständlich.",
+            "anchor": "voice",
+            "target": -16,
+            "offsets": {"voice": 0, "game": -10, "chat": -1, "music": -18, "alerts": -4, "desktop": -10},
+            "ducking": {"amount": 4, "roles": "game, music, desktop", "triggers": "voice", "hold_ms": 800},
+            "speed": "normal",
+            "scream_guard": true
+        },
+        {
+            "id": "game-first",
+            "name": "Spiel vor Stimme",
+            "description": "Story, Horror, Atmosphäre: das Spiel trägt den Stream.",
+            "anchor": "game",
+            "target": -16,
+            "offsets": {"voice": -2, "game": 0, "chat": -3, "music": -18, "alerts": -6, "desktop": 0},
+            "ducking": {"amount": 2, "roles": "game, desktop", "triggers": "voice", "hold_ms": 800},
+            "speed": "normal",
+            "scream_guard": true
+        },
+        {
+            "id": "balanced",
+            "name": "Ausgeglichen",
+            "description": "Stimme und Spiel sind gleich wichtig.",
+            "anchor": "voice",
+            "target": -16,
+            "offsets": {"voice": 0, "game": -5, "chat": -1, "music": -15, "alerts": -4, "desktop": -5},
+            "ducking": {"amount": 3, "roles": "game, music, desktop", "triggers": "voice", "hold_ms": 800},
+            "speed": "normal",
+            "scream_guard": true
+        },
+        {
+            "id": "competitive",
+            "name": "Competitive",
+            "description": "Schritte und Sounds bleiben hörbar, die Dynamik bleibt erhalten. Spitzen fängt nur der Limiter.",
+            "anchor": "voice",
+            "target": -16,
+            "offsets": {"voice": 0, "game": -7, "chat": -1, "music": -18, "alerts": -6, "desktop": -7},
+            "ducking": {"amount": 0, "roles": "", "triggers": "voice", "hold_ms": 800},
+            "speed": "slow",
+            "scream_guard": false
+        },
+        {
+            "id": "just-chatting",
+            "name": "Just Chatting",
+            "description": "Nur reden, der Rest ist Hintergrund.",
+            "anchor": "voice",
+            "target": -16,
+            "offsets": {"voice": 0, "game": -20, "chat": -1, "music": -20, "alerts": -4, "desktop": -20},
+            "ducking": {"amount": 8, "roles": "game, music, desktop", "triggers": "voice", "hold_ms": 1000},
+            "speed": "normal",
+            "scream_guard": true
+        },
+        {
+            "id": "music",
+            "name": "Musik",
+            "description": "Musik, DJ oder Karaoke stehen im Vordergrund.",
+            "anchor": "music",
+            "target": -14,
+            "offsets": {"voice": -2, "game": -12, "chat": -3, "music": 0, "alerts": -6, "desktop": -6},
+            "ducking": {"amount": 2, "roles": "game, desktop", "triggers": "voice", "hold_ms": 800},
+            "speed": "normal",
+            "scream_guard": true
+        },
+        {
+            "id": "podcast",
+            "name": "Gäste / Podcast",
+            "description": "Alle Stimmen gleich laut, egal ob Mikro oder Discord.",
+            "anchor": "voice",
+            "target": -16,
+            "offsets": {"voice": 0, "game": -18, "chat": 0, "music": -18, "alerts": -8, "desktop": -18},
+            "ducking": {"amount": 4, "roles": "game, music, desktop", "triggers": "voice, chat", "hold_ms": 800},
+            "speed": "normal",
+            "scream_guard": true
+        }
+    ]
+}

@@ -27,8 +27,11 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <string>
 
 class QCheckBox;
+class QComboBox;
 class QLabel;
 class QListWidget;
+class QPushButton;
+class QToolButton;
 class QVBoxLayout;
 
 namespace am {
@@ -39,12 +42,15 @@ class LevelMeter;
 struct DockRow {
 	QWidget *widget = nullptr;
 	QLabel *name = nullptr;
+	QComboBox *role = nullptr;   // nur bei Quellen
+	QToolButton *lock = nullptr; // nur bei Quellen
 	LevelMeter *meter = nullptr;
 	QLabel *value = nullptr;
 	QLabel *status = nullptr;
 };
 
-// Das Dock „Auto Mixer“: Ein/Aus, Status pro Spur und Quelle mit Pegelbalken, Warnungen und Verlauf
+// Das Dock „Auto Mixer“: Preset, Ein/Aus, Modus, Status pro Spur und Quelle mit Pegelbalken und Zielmarke,
+// Anpassung, Schloss, Warnungen und Verlauf
 class MixerDock : public QWidget {
 	Q_OBJECT
 
@@ -54,17 +60,25 @@ public:
 	// Beim Beenden von OBS: nicht mehr aktualisieren
 	void shutdown() { timer_.stop(); }
 
+	// Wechselt auf „Regeln“; fragt vorher, ob der Filter angehängt werden darf
+	void requestRegulate();
+
 private:
 	void refresh();
+	void updatePresets(const EngineView &view);
 	void updateTracks(const EngineView &view);
 	void updateSources(const EngineView &view);
 	void updateHistory(const EngineView &view);
-	DockRow makeRow(QWidget *parent);
+	DockRow makeTrackRow();
+	DockRow makeSourceRow(const std::string &uuid);
+	void openSettings();
 
 	Engine *engine_;
 	QCheckBox *enabled_;
-	QLabel *mode_;
+	QComboBox *preset_;
+	QComboBox *mode_;
 	QLabel *warnings_;
+	QLabel *hint_;
 	QWidget *tracksBox_;
 	QVBoxLayout *tracksLayout_;
 	std::map<int, DockRow> trackRows_;
@@ -73,8 +87,10 @@ private:
 	QLabel *noSources_;
 	std::map<std::string, DockRow> sourceRows_;
 	std::vector<std::string> sourceOrder_;
+	std::vector<std::string> presetIds_;
 	QListWidget *history_;
 	uint64_t historyVersion_ = 0;
+	double sinceAttach_ = 0.0;
 	QTimer timer_;
 };
 

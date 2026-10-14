@@ -26,12 +26,12 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 namespace am {
 
-const char *tr(const char *key)
+const char *text(const char *key)
 {
 	return obs_module_text(key);
 }
 
-std::string trf(const char *key, ...)
+std::string textf(const char *key, ...)
 {
 	char buffer[512];
 	va_list args;
@@ -51,15 +51,14 @@ std::string formatDb(float db, bool plus)
 		std::snprintf(number, sizeof(number), "%.0f", static_cast<double>(magnitude));
 	else
 		std::snprintf(number, sizeof(number), "%.1f", static_cast<double>(magnitude));
-	std::string text = number;
-	const std::string separator = tr("AutoMixer.DecimalSeparator");
-	if (const size_t dot = text.find('.'); dot != std::string::npos)
-		text.replace(dot, 1, separator);
+	std::string result = number;
+	if (const size_t dot = result.find('.'); dot != std::string::npos)
+		result.replace(dot, 1, text("AutoMixer.DecimalSeparator"));
 	if (rounded < 0.0f)
-		text = "\xE2\x88\x92" + text; // −
+		result = "\xE2\x88\x92" + result; // −
 	else if (plus && rounded > 0.0f)
-		text = "+" + text;
-	return text + " dB";
+		result = "+" + result;
+	return result + " dB";
 }
 
 std::string formatLufs(float lufs)
@@ -68,10 +67,10 @@ std::string formatLufs(float lufs)
 		return "\xE2\x80\x93"; // –
 	char number[32];
 	std::snprintf(number, sizeof(number), "%.1f", static_cast<double>(std::fabs(lufs)));
-	std::string text = number;
-	if (const size_t dot = text.find('.'); dot != std::string::npos)
-		text.replace(dot, 1, tr("AutoMixer.DecimalSeparator"));
-	return (lufs < 0.0f ? "\xE2\x88\x92" : "") + text + " LUFS";
+	std::string result = number;
+	if (const size_t dot = result.find('.'); dot != std::string::npos)
+		result.replace(dot, 1, text("AutoMixer.DecimalSeparator"));
+	return (lufs < 0.0f ? "\xE2\x88\x92" : "") + result + " LUFS";
 }
 
 } // namespace am

@@ -114,6 +114,7 @@ Settings loadSettings()
 	r.get("warn_quiet_seconds", s.warnings.quietSeconds, 0.5f, 120.0f);
 	r.get("warn_clip_dbtp", s.warnings.clipDbtp, -6.0f, 0.0f);
 	r.get("mute_warning", s.muteWarning);
+	r.get("desktop_hint_dismissed", s.desktopHintDismissed);
 	r.get("auto_by_activity", s.autoByActivity);
 	r.get("dock_introduced", s.dockIntroduced);
 
@@ -175,6 +176,7 @@ void saveSettings(const Settings &s)
 	obs_data_set_double(data, "warn_quiet_seconds", s.warnings.quietSeconds);
 	obs_data_set_double(data, "warn_clip_dbtp", s.warnings.clipDbtp);
 	obs_data_set_bool(data, "mute_warning", s.muteWarning);
+	obs_data_set_bool(data, "desktop_hint_dismissed", s.desktopHintDismissed);
 	obs_data_set_bool(data, "auto_by_activity", s.autoByActivity);
 	obs_data_set_bool(data, "dock_introduced", s.dockIntroduced);
 
