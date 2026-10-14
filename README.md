@@ -332,7 +332,9 @@ Die DLL landet in `build_x64/RelWithDebInfo/`. Den Installer baust du mit [Inno 
 ISCC.exe /DAppVersion=0.1.0 installer/obs-audio-mixer.iss
 ```
 
-Für macOS und Linux gibt es die Presets `macos` und `ubuntu-x86_64`. Die GitHub-Actions-Workflows bauen alle drei Plattformen samt Windows-Setup automatisch. Ein Tag wie `0.1.0` veröffentlicht ein Release mit allen Paketen und dem passenden Abschnitt aus dem [Changelog](CHANGELOG.md).
+Für macOS und Linux gibt es die Presets `macos` und `ubuntu-x86_64`. Die GitHub-Actions-Workflows bauen alle drei Plattformen samt Windows-Setup automatisch.
+
+**Neue Version veröffentlichen:** In `buildspec.json` die Version erhöhen, im [Changelog](CHANGELOG.md) einen Abschnitt `## <Version> – <Datum>` ergänzen und das Ganze nach `master` mergen. Die CI baut dann alle Pakete und veröffentlicht das Release mit dem Text aus dem Changelog. Ein Tag wie `0.1.0` löst ebenfalls ein Release aus.
 
 **Tests:** Der DSP-Kern (`src/dsp`) hängt weder von OBS noch von Qt ab und lässt sich eigenständig testen:
 
