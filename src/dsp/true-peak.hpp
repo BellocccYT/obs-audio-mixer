@@ -20,6 +20,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <vector>
 
 namespace am::dsp {
@@ -72,8 +73,10 @@ public:
 	void configure(int channels, float gate);
 	void reset();
 
-	// Höchster Betrag (linear) in diesem Abschnitt, überabgetastet
-	float process(const float *const *data, size_t frames);
+	// Höchster Betrag (linear) in diesem Abschnitt, überabgetastet. Optional im selben Durchlauf: höchster
+	// Sample-Betrag und Zahl der Samples ab clipLevel
+	float process(const float *const *data, size_t frames, float *samplePeak = nullptr, uint64_t *clipped = nullptr,
+		      float clipLevel = 0.9999f);
 
 private:
 	Oversampler4x oversampler_;

@@ -38,6 +38,52 @@ float binCenter(int bin)
 	return kHistogramMin + (static_cast<float>(bin) + 0.5f) * kHistogramStep;
 }
 
+bool isZero(const float *in, size_t n)
+{
+	for (size_t i = 0; i < n; i++) {
+		if (in[i] != 0.0f)
+			return false;
+	}
+	return true;
+}
+
+// K-Filter über n Samples eines Kanals, liefert die Summe der Quadrate. Die Filter werden lokal kopiert,
+// damit der Compiler ihren Zustand in Registern halten kann.
+double filterChannel(Biquad &shelfState, Biquad &highpassState, const float *in, size_t n)
+{
+	Biquad shelf = shelfState;
+	Biquad highpass = highpassState;
+	double sum = 0.0;
+	for (size_t i = 0; i < n; i++) {
+		const double y = highpass.process(shelf.process(in[i]));
+		sum += y * y;
+	}
+	shelfState = shelf;
+	highpassState = highpass;
+	return sum;
+}
+
+// Wie filterChannel, aber zwei Kanäle verschränkt: zwei unabhängige Rechenketten nutzen die CPU besser
+void filterStereo(Biquad *shelfState, Biquad *highpassState, const float *left, const float *right, size_t n,
+		  double &sumLeft, double &sumRight)
+{
+	Biquad shelfL = shelfState[0], shelfR = shelfState[1];
+	Biquad highpassL = highpassState[0], highpassR = highpassState[1];
+	double l = 0.0, r = 0.0;
+	for (size_t i = 0; i < n; i++) {
+		const double yl = highpassL.process(shelfL.process(left[i]));
+		const double yr = highpassR.process(shelfR.process(right[i]));
+		l += yl * yl;
+		r += yr * yr;
+	}
+	shelfState[0] = shelfL;
+	shelfState[1] = shelfR;
+	highpassState[0] = highpassL;
+	highpassState[1] = highpassR;
+	sumLeft = l;
+	sumRight = r;
+}
+
 } // namespace
 
 KWeighting kWeighting(double sampleRate)
@@ -151,21 +197,32 @@ void LoudnessMeter::process(const float *const *data, size_t frames)
 	while (pos < frames) {
 		// Bis zur nächsten Grenze eines 10-ms-Abschnitts oder 100-ms-Blocks am Stück rechnen
 		const size_t n = std::min({frames - pos, frameRemaining_, blockRemaining_});
-		for (size_t c = 0; c < channels; c++) {
-			if (weights_[c] == 0.0f || !data[c])
-				continue;
-			const float *in = data[c] + pos;
-			Biquad &shelf = shelf_[c];
-			Biquad &highpass = highpass_[c];
-			double sum = 0.0;
-			for (size_t i = 0; i < n; i++) {
-				const double y = highpass.process(shelf.process(in[i]));
-				sum += y * y;
+		double weighted = 0.0;
+		if (channels == 2 && data[0] && data[1] && weights_[0] != 0.0f && weights_[1] != 0.0f) {
+			const float *left = data[0] + pos;
+			const float *right = data[1] + pos;
+			const bool silent = shelf_[0].idle() && highpass_[0].idle() && shelf_[1].idle() &&
+					    highpass_[1].idle() && isZero(left, n) && isZero(right, n);
+			if (!silent) {
+				double sumLeft, sumRight;
+				filterStereo(shelf_.data(), highpass_.data(), left, right, n, sumLeft, sumRight);
+				weighted = static_cast<double>(weights_[0]) * sumLeft +
+					   static_cast<double>(weights_[1]) * sumRight;
 			}
-			const double weighted = static_cast<double>(weights_[c]) * sum;
-			frameSum_ += weighted;
-			blockSum_ += weighted;
+		} else {
+			for (size_t c = 0; c < channels; c++) {
+				if (weights_[c] == 0.0f || !data[c])
+					continue;
+				const float *in = data[c] + pos;
+				// Digitale Stille (z. B. ungenutzte Spur): nichts zu rechnen
+				if (shelf_[c].idle() && highpass_[c].idle() && isZero(in, n))
+					continue;
+				weighted += static_cast<double>(weights_[c]) *
+					    filterChannel(shelf_[c], highpass_[c], in, n);
+			}
 		}
+		frameSum_ += weighted;
+		blockSum_ += weighted;
 		pos += n;
 		frameRemaining_ -= n;
 		blockRemaining_ -= n;

@@ -68,21 +68,10 @@ void Analyzer::process(const float *const *data, size_t frames)
 		for (int c = 0; c < channels; c++)
 			chunk[c] = data[c] ? data[c] + pos : nullptr;
 
-		for (int c = 0; c < channels; c++) {
-			if (!chunk[c])
-				continue;
-			const float *in = chunk[c];
-			float peak = blockSamplePeak_;
-			uint64_t clipped = 0;
-			for (size_t i = 0; i < n; i++) {
-				const float magnitude = std::fabs(in[i]);
-				peak = std::max(peak, magnitude);
-				clipped += magnitude >= kClipLevel ? 1 : 0;
-			}
-			blockSamplePeak_ = peak;
-			snapshot_.clipped += clipped;
-		}
-		blockTruePeak_ = std::max(blockTruePeak_, truePeak_.process(chunk, n));
+		float samplePeak = 0.0f;
+		blockTruePeak_ = std::max(blockTruePeak_,
+					  truePeak_.process(chunk, n, &samplePeak, &snapshot_.clipped, kClipLevel));
+		blockSamplePeak_ = std::max(blockSamplePeak_, samplePeak);
 
 		meter_.process(chunk, n); // ruft am Blockende onBlock() auf
 		pos += n;

@@ -81,28 +81,32 @@ void OutputStage::process(float *const *data, size_t frames, float gainDb, bool 
 	if (!limiter) {
 		if (!limiterIdle_)
 			resetLimiter();
-		// Nur Verstärkung; die Verzögerung bleibt, damit sich die Latenz beim Umschalten nicht ändert
-		for (size_t i = 0; i < frames; i++) {
-			gain_ += (target - gain_) * smoothing_;
-			const float g = static_cast<float>(gain_);
-			const size_t read = (delayHead_ + readOffset) % delaySize_;
-			for (size_t c = 0; c < channels; c++) {
-				if (!data[c])
-					continue;
-				Channel &channel = channels_[c];
-				const float v = data[c][i] * g;
-				channel.history.push(v);
-				channel.delay[delayHead_] = v;
-				data[c][i] = channel.delay[read];
-			}
-			delayHead_ = delayHead_ + 1 == delaySize_ ? 0 : delayHead_ + 1;
-			sampleIndex_++;
-		}
+		processGainOnly(data, frames, target);
 		return;
 	}
 
 	const float ceiling = static_cast<float>(dbToLinear(ceilingDb));
 	const float gate = ceiling * 0.5f; // nur in der Nähe der Obergrenze überabtasten
+
+	// Schneller Weg: Der Limiter hat nichts zu tun, wenn selbst die höchste Verstärkung in diesem Abschnitt
+	// alle Samples 6 dB unter der Obergrenze lässt (Zwischenwerte liegen höchstens wenige dB darüber) und
+	// auch am Ende des letzten Abschnitts nichts in der Nähe der Obergrenze lag
+	const bool quiet = std::all_of(channels_.begin(), channels_.end(),
+				       [](const Channel &channel) { return channel.countdown == 0; });
+	if (limiterIdle_ && quiet) {
+		float peak = 0.0f;
+		for (size_t c = 0; c < channels; c++) {
+			if (!data[c])
+				continue;
+			for (size_t i = 0; i < frames; i++)
+				peak = std::max(peak, std::fabs(data[c][i]));
+		}
+		if (peak * static_cast<float>(std::max(gain_, target)) < gate) {
+			processGainOnly(data, frames, target);
+			return;
+		}
+	}
+
 	const float release = static_cast<float>(release_);
 	for (size_t i = 0; i < frames; i++) {
 		gain_ += (target - gain_) * smoothing_;
@@ -172,6 +176,31 @@ void OutputStage::process(float *const *data, size_t frames, float gainDb, bool 
 		// Rundungsfehler der laufenden Summe nicht anwachsen lassen
 		envelopeSum_ = static_cast<double>(window_);
 	}
+}
+
+void OutputStage::processGainOnly(float *const *data, size_t frames, double target)
+{
+	// Nur Verstärkung; die Verzögerung bleibt, damit sich die Latenz beim Umschalten nicht ändert
+	const size_t channels = channels_.size();
+	const size_t readOffset = delaySize_ - latency_;
+	for (size_t i = 0; i < frames; i++) {
+		gain_ += (target - gain_) * smoothing_;
+		const float g = static_cast<float>(gain_);
+		const size_t read = (delayHead_ + readOffset) % delaySize_;
+		for (size_t c = 0; c < channels; c++) {
+			if (!data[c])
+				continue;
+			Channel &channel = channels_[c];
+			const float v = data[c][i] * g;
+			channel.history.push(v);
+			channel.delay[delayHead_] = v;
+			data[c][i] = channel.delay[read];
+		}
+		delayHead_ = delayHead_ + 1 == delaySize_ ? 0 : delayHead_ + 1;
+		sampleIndex_++;
+	}
+	for (Channel &channel : channels_)
+		channel.countdown = 0;
 }
 
 float OutputStage::gainDb() const

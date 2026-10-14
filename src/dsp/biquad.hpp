@@ -47,6 +47,9 @@ public:
 		return y;
 	}
 
+	// Kein Nachklingen mehr: bei digitaler Stille am Eingang bleibt der Ausgang 0
+	bool idle() const { return z1_ == 0.0 && z2_ == 0.0; }
+
 	// Winzige Restwerte nach Stille auf 0 setzen, sonst rechnet die CPU mit langsamen denormalen Zahlen
 	void flushDenormals()
 	{

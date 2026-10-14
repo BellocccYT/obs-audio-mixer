@@ -60,6 +60,7 @@ private:
 	};
 
 	void resetLimiter();
+	void processGainOnly(float *const *data, size_t frames, double target);
 
 	Config config_;
 	Oversampler4x oversampler_;

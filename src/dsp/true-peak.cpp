@@ -106,9 +106,12 @@ void TruePeakMeter::reset()
 	std::fill(countdown_.begin(), countdown_.end(), 0);
 }
 
-float TruePeakMeter::process(const float *const *data, size_t frames)
+float TruePeakMeter::process(const float *const *data, size_t frames, float *samplePeak, uint64_t *clipped,
+			     float clipLevel)
 {
 	float peak = 0.0f;
+	float sample = 0.0f;
+	uint64_t over = 0;
 	for (size_t c = 0; c < history_.size(); c++) {
 		if (!data[c])
 			continue;
@@ -119,7 +122,8 @@ float TruePeakMeter::process(const float *const *data, size_t frames)
 			const float x = in[i];
 			const float magnitude = std::fabs(x);
 			history.push(x);
-			peak = std::max(peak, magnitude);
+			sample = std::max(sample, magnitude);
+			over += magnitude >= clipLevel ? 1 : 0;
 			if (magnitude >= gate_)
 				countdown = SampleHistory::kSize;
 			if (countdown > 0) {
@@ -132,7 +136,11 @@ float TruePeakMeter::process(const float *const *data, size_t frames)
 		}
 		countdown_[c] = countdown;
 	}
-	return peak;
+	if (samplePeak)
+		*samplePeak = sample;
+	if (clipped)
+		*clipped += over;
+	return std::max(peak, sample);
 }
 
 } // namespace am::dsp
