@@ -1,6 +1,6 @@
 /*
-Plugin Name
-Copyright (C) <Year> <Developer> <Email Address>
+Auto Mixer
+Copyright (C) 2026 Belloccc
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -16,19 +16,35 @@ You should have received a copy of the GNU General Public License along
 with this program. If not, see <https://www.gnu.org/licenses/>
 */
 
-#include <obs-module.h>
-#include <plugin-support.h>
+#include "types.hpp"
 
-OBS_DECLARE_MODULE()
-OBS_MODULE_USE_DEFAULT_LOCALE(PLUGIN_NAME, "en-US")
+#include <cstring>
 
-bool obs_module_load(void)
+namespace am::dsp {
+
+namespace {
+
+const char *const kRoleIds[kRoleCount] = {"voice", "game", "chat", "music", "alerts", "desktop", "ignore"};
+
+} // namespace
+
+const char *roleId(Role role)
 {
-	obs_log(LOG_INFO, "plugin loaded successfully (version %s)", PLUGIN_VERSION);
-	return true;
+	const int index = static_cast<int>(role);
+	return index >= 0 && index < kRoleCount ? kRoleIds[index] : "ignore";
 }
 
-void obs_module_unload(void)
+bool roleFromId(const char *id, Role &role)
 {
-	obs_log(LOG_INFO, "plugin unloaded");
+	if (!id)
+		return false;
+	for (int i = 0; i < kRoleCount; i++) {
+		if (std::strcmp(id, kRoleIds[i]) == 0) {
+			role = static_cast<Role>(i);
+			return true;
+		}
+	}
+	return false;
 }
+
+} // namespace am::dsp

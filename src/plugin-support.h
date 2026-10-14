@@ -1,6 +1,6 @@
 /*
-Plugin Name
-Copyright (C) <Year> <Developer> <Email Address>
+Auto Mixer
+Copyright (C) 2026 Belloccc
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by

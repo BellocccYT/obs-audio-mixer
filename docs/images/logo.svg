@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2ea043"/>
+      <stop offset="1" stop-color="#0e7a6b"/>
+    </linearGradient>
+    <linearGradient id="knob" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#d8f5e0"/>
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="28" fill="url(#bg)"/>
+  <!-- Pegelkurve, die sich glättet -->
+  <path d="M14 46 C 24 26, 30 66, 40 40 S 54 30, 64 44 S 84 50, 114 46" fill="none" stroke="#ffffff" stroke-opacity="0.35" stroke-width="5" stroke-linecap="round"/>
+  <!-- Drei Fader -->
+  <g stroke="#0b3d2e" stroke-opacity="0.45" stroke-width="6" stroke-linecap="round">
+    <line x1="36" y1="62" x2="36" y2="110"/>
+    <line x1="64" y1="62" x2="64" y2="110"/>
+    <line x1="92" y1="62" x2="92" y2="110"/>
+  </g>
+  <g fill="url(#knob)">
+    <rect x="25" y="72" width="22" height="13" rx="4"/>
+    <rect x="53" y="88" width="22" height="13" rx="4"/>
+    <rect x="81" y="79" width="22" height="13" rx="4"/>
+  </g>
+</svg>
