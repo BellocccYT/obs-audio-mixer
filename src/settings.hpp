@@ -36,6 +36,7 @@ struct SourceSettings {
 	dsp::Role role = dsp::Role::Ignore;
 	bool roleChosen = false; // vom Nutzer gewählt (sonst gilt der automatische Vorschlag)
 	bool locked = false;
+	bool filterAttached = false; // hat den Filter schon einmal bekommen (entfernt ihn der Nutzer, bleibt er weg)
 	float minGainDb = -30.0f;
 	float maxGainDb = 12.0f;
 };

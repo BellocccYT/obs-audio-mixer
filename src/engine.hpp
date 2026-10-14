@@ -169,8 +169,9 @@ public:
 	std::vector<KnownSource> knownSources() const;
 
 	// Filter „Auto Mixer“ an alle Quellen mit Rolle hängen (nur im UI-Thread aufrufen). Liefert die Namen
-	// der Quellen, die einen Filter bekommen haben bzw. bekommen würden (dryRun).
-	std::vector<std::string> attachFilters(bool dryRun = false);
+	// der Quellen, die einen Filter bekommen haben bzw. bekommen würden (dryRun). onlyNew: nur an Quellen, die
+	// ihn noch nie hatten (hat der Nutzer ihn entfernt, bleibt er weg)
+	std::vector<std::string> attachFilters(bool dryRun = false, bool onlyNew = false);
 	int removeAllFilters(); // aus allen Quellen entfernen, schaltet auf „Nur beobachten“
 
 	// Gelernte Grundlautheiten verwerfen und neu lernen (Tastenkürzel „Neu einmessen“)

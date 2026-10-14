@@ -140,6 +140,7 @@ Settings loadSettings()
 		dsp::roleFromId(obs_data_get_string(item, "role"), entry.role);
 		ri.get("role_chosen", entry.roleChosen);
 		ri.get("locked", entry.locked);
+		ri.get("filter_attached", entry.filterAttached);
 		ri.get("min_gain", entry.minGainDb, -60.0f, 0.0f);
 		ri.get("max_gain", entry.maxGainDb, 0.0f, 24.0f);
 		if (!entry.uuid.empty() || !entry.name.empty())
@@ -199,6 +200,7 @@ void saveSettings(const Settings &s)
 		obs_data_set_string(item, "role", dsp::roleId(entry.role));
 		obs_data_set_bool(item, "role_chosen", entry.roleChosen);
 		obs_data_set_bool(item, "locked", entry.locked);
+		obs_data_set_bool(item, "filter_attached", entry.filterAttached);
 		obs_data_set_double(item, "min_gain", entry.minGainDb);
 		obs_data_set_double(item, "max_gain", entry.maxGainDb);
 		obs_data_array_push_back(sources, item);

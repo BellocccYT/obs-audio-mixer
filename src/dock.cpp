@@ -318,11 +318,12 @@ void MixerDock::refresh()
 	hint_->setVisible(!hints.isEmpty());
 	hint_->setText(hints.join(QStringLiteral("<br>")));
 
-	// Im Modus „Regeln“ bekommen neue Quellen mit Rolle den Filter automatisch (Zustimmung liegt vor)
+	// Im Modus „Regeln“ bekommen neue Quellen mit Rolle den Filter automatisch (Zustimmung liegt vor).
+	// Hat der Nutzer ihn bei einer Quelle entfernt, bleibt er dort weg.
 	sinceAttach_ += 0.1;
 	if (view.mode == Mode::Regulate && view.filtersMissing && sinceAttach_ > 2.0) {
 		sinceAttach_ = 0.0;
-		engine_->attachFilters();
+		engine_->attachFilters(false, true);
 	}
 
 	updateTracks(view);

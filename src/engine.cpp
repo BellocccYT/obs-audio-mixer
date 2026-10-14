@@ -450,16 +450,24 @@ std::vector<KnownSource> Engine::knownSources() const
 	return list;
 }
 
-std::vector<std::string> Engine::attachFilters(bool dryRun)
+std::vector<std::string> Engine::attachFilters(bool dryRun, bool onlyNew)
 {
 	std::lock_guard lock(mutex_);
 	std::vector<std::string> names;
 	for (auto &[uuid, entry] : entries_) {
-		if (sourceSettings(*entry).role == dsp::Role::Ignore)
+		const SourceSettings &config = sourceSettings(*entry);
+		if (config.role == dsp::Role::Ignore || (onlyNew && config.filterAttached))
 			continue;
 		OBSSourceAutoRelease source = obs_weak_source_get_source(entry->weak);
-		if (!source || hasMixerFilter(source))
+		if (!source)
 			continue;
+		if (hasMixerFilter(source)) {
+			if (!dryRun && !config.filterAttached) {
+				sourceSettings(*entry).filterAttached = true;
+				settingsDirty_ = true;
+			}
+			continue;
+		}
 		names.push_back(entry->name);
 		if (dryRun)
 			continue;
@@ -467,6 +475,7 @@ std::vector<std::string> Engine::attachFilters(bool dryRun)
 		OBSSourceAutoRelease filter = obs_source_create_private(kFilterId, text("AutoMixer.Filter"), nullptr);
 		if (filter)
 			obs_source_filter_add(source, filter);
+		sourceSettings(*entry).filterAttached = true;
 		entry->sinceFilterScan = 1e9;
 	}
 	if (!dryRun) {
@@ -505,6 +514,8 @@ int Engine::removeAllFilters()
 		entry->filter.reset();
 		entry->sinceFilterScan = 1e9;
 	}
+	for (SourceSettings &source : settings_.sources)
+		source.filterAttached = false;
 	settings_.mode = Mode::Observe;
 	settings_.filterConsent = false;
 	settingsDirty_ = true;
@@ -1161,8 +1172,11 @@ void Engine::buildView()
 	for (const auto &[uuid, entry] : entries_) {
 		const dsp::ChannelInput &in = entry->channel.in;
 		const bool recent = clock_ - entry->lastSound <= kVisibleSeconds;
-		if (in.role != dsp::Role::Ignore && !entry->filter && recent)
-			view_.filtersMissing = true;
+		if (in.role != dsp::Role::Ignore && !entry->filter && recent) {
+			const SourceSettings *config = settings_.findSource(entry->uuid, entry->name);
+			if (!config || !config->filterAttached)
+				view_.filtersMissing = true;
+		}
 		if (recent)
 			view_.sources.push_back(entry->view);
 	}
