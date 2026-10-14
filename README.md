@@ -360,9 +360,19 @@ Das Projekt basiert auf der offiziellen [obs-plugintemplate](https://github.com/
 
 </details>
 
+## ⚖️ Haftungsausschluss
+
+Der Auto Mixer ist ein kostenloses Open-Source-Projekt. Er wird so bereitgestellt, wie er ist, **ohne jede Gewährleistung** (siehe Abschnitte 11 und 12 der [GPL-2.0](LICENSE)). Die Nutzung erfolgt auf eigene Verantwortung:
+
+- Prüf vor dem Livegang, ob dein Mix so klingt, wie du willst. Der Modus **„Nur beobachten“** ist genau dafür da.
+- Für den Inhalt und den Ton deiner Streams und Aufnahmen bist du selbst verantwortlich.
+- Eine Haftung für Schäden, die durch die Nutzung oder durch Fehler im Plugin entstehen, ist ausgeschlossen, soweit das gesetzlich zulässig ist. Die Haftung für Vorsatz und grobe Fahrlässigkeit sowie nach zwingenden gesetzlichen Vorschriften bleibt unberührt.
+
+„OBS“ und „OBS Studio“ sind Marken des OBS Project. Der Auto Mixer ist ein unabhängiges Projekt und nicht offiziell mit dem OBS Project verbunden oder von ihm unterstützt.
+
 ## 📄 Lizenz
 
-GPL-2.0-or-later, siehe [LICENSE](LICENSE). Nicht offiziell mit dem OBS Project verbunden.
+GPL-2.0-or-later, siehe [LICENSE](LICENSE).
 
 <div align="center">
 
