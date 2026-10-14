@@ -9,12 +9,14 @@
 !/src
 !/tests
 !/installer
+!/docs
 !.clang-format
 !.gersemirc
 !.gitignore
 !buildspec.json
 !CMakeLists.txt
 !CMakePresets.json
+!CHANGELOG.md
 !LICENSE
 !README.md
 
