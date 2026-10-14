@@ -14,6 +14,16 @@ include(helpers)
 
 add_library(${CMAKE_PROJECT_NAME} MODULE)
 
+# DSP-Kern ohne OBS- und Qt-Abhängigkeit (eigenständig testbar, siehe tests/)
+add_subdirectory(src/dsp)
+target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE automixer-dsp)
+
+option(ENABLE_TESTS "Tests des DSP-Kerns mitbauen (CTest)" OFF)
+if(ENABLE_TESTS)
+  enable_testing()
+  add_subdirectory(tests)
+endif()
+
 find_package(libobs REQUIRED)
 find_package(obs-frontend-api REQUIRED)
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets)
