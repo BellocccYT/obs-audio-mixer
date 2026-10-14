@@ -206,6 +206,7 @@ struct Engine::Entry {
 	float mutedSpeaking = 0.0f;
 	float lastFaderDb = 0.0f;
 	bool faderKnown = false;
+	dsp::CalibrationCollector collector;
 	SourceView view;
 };
 
@@ -230,6 +231,8 @@ void Engine::start()
 		// Ohne Zustimmung nie regeln (z. B. wenn die Einstellungen von Hand geändert wurden)
 		if (!settings_.filterConsent)
 			settings_.mode = Mode::Observe;
+		autoSelector_.reset(dsp::preset_ids::kVoiceFirst);
+		lastEffective_ = effectivePresetId();
 
 		obs_audio_info info = {};
 		obs_get_audio_info(&info);
@@ -510,6 +513,94 @@ int Engine::removeAllFilters()
 	return static_cast<int>(found.size());
 }
 
+void Engine::relearn()
+{
+	std::lock_guard lock(mutex_);
+	for (auto &[uuid, entry] : entries_)
+		entry->channel.state.resetLearning();
+	pushHistory(text("AutoMixer.History.Relearn"));
+}
+
+void Engine::startCalibration(double seconds)
+{
+	std::lock_guard lock(mutex_);
+	calibrating_ = true;
+	calibrationFinished_ = false;
+	calibrationElapsed_ = 0.0;
+	calibrationDuration_ = std::max(5.0, seconds);
+	dsp::AutoPresetSelector::Config config;
+	config.windowSeconds = static_cast<float>(calibrationDuration_);
+	config.warmupSeconds = 0.0f;
+	calibrationActivity_.setConfig(config);
+	calibrationActivity_.reset();
+	for (auto &[uuid, entry] : entries_)
+		entry->collector.reset();
+	pushHistory(text("AutoMixer.History.CalibrationStarted"));
+}
+
+void Engine::cancelCalibration()
+{
+	std::lock_guard lock(mutex_);
+	calibrating_ = false;
+	calibrationFinished_ = false;
+}
+
+CalibrationView Engine::calibration() const
+{
+	std::lock_guard lock(mutex_);
+	CalibrationView view;
+	view.running = calibrating_;
+	view.finished = calibrationFinished_;
+	view.progress = static_cast<float>(std::clamp(calibrationElapsed_ / calibrationDuration_, 0.0, 1.0));
+	view.remaining = std::max(0.0, calibrationDuration_ - calibrationElapsed_);
+	if (!calibrationFinished_)
+		return view;
+	for (const auto &[uuid, entry] : entries_) {
+		const dsp::ChannelInput &in = entry->channel.in;
+		if (in.role == dsp::Role::Ignore)
+			continue;
+		CalibrationSource source;
+		source.uuid = uuid;
+		source.name = entry->name;
+		source.role = in.role;
+		source.targetLufs = regulator_.target(in.role);
+		source.result = entry->collector.result(source.targetLufs, in);
+		view.sources.push_back(source);
+	}
+	std::sort(view.sources.begin(), view.sources.end(), [](const CalibrationSource &a, const CalibrationSource &b) {
+		if (a.role != b.role)
+			return static_cast<int>(a.role) < static_cast<int>(b.role);
+		return lowercase(a.name) < lowercase(b.name);
+	});
+	view.suggestedPreset = calibrationActivity_.suggestion();
+	return view;
+}
+
+void Engine::applyCalibration(bool usePreset)
+{
+	std::lock_guard lock(mutex_);
+	if (!calibrationFinished_)
+		return;
+	int applied = 0;
+	for (auto &[uuid, entry] : entries_) {
+		const dsp::ChannelInput &in = entry->channel.in;
+		if (in.role == dsp::Role::Ignore || in.locked)
+			continue;
+		const dsp::CalibrationResult result = entry->collector.result(regulator_.target(in.role), in);
+		if (!result.enoughData)
+			continue;
+		dsp::CalibrationCollector::apply(result, entry->channel.state);
+		applied++;
+	}
+	const std::string suggested = calibrationActivity_.suggestion();
+	if (usePreset && !suggested.empty() && presetExists(suggested)) {
+		settings_.preset = suggested;
+		settingsDirty_ = true;
+	}
+	calibrationFinished_ = false;
+	pushHistory(textf("AutoMixer.History.CalibrationApplied", applied));
+}
+
 void Engine::setStreamMixers(uint32_t mixers)
 {
 	std::lock_guard lock(mutex_);
@@ -591,6 +682,8 @@ void Engine::tick(double dt)
 		++it;
 	}
 
+	updateAutoPreset(dt);
+	updateCalibration(dt);
 	regulate(dt);
 	updateTracks(dt);
 	updateWarnings(dt);
@@ -711,9 +804,77 @@ const dsp::Preset *Engine::findPreset(const std::string &id) const
 	return builtinPresets_.empty() ? nullptr : &builtinPresets_.front();
 }
 
+bool Engine::presetExists(const std::string &id) const
+{
+	const auto matches = [&](const dsp::Preset &preset) {
+		return preset.id == id;
+	};
+	return std::any_of(builtinPresets_.begin(), builtinPresets_.end(), matches) ||
+	       std::any_of(userPresets_.begin(), userPresets_.end(), matches);
+}
+
 std::string Engine::effectivePresetId() const
 {
-	return settings_.preset;
+	if (settings_.preset != dsp::preset_ids::kAuto)
+		return settings_.preset;
+	// „Automatisch“: erst die Zuordnung Szene → Preset, dann die Aktivität
+	if (const ScenePreset *mapped = settings_.findScene(currentScene_); mapped && presetExists(mapped->preset))
+		return mapped->preset;
+	if (settings_.autoByActivity && presetExists(autoSelector_.current()))
+		return autoSelector_.current();
+	return dsp::preset_ids::kVoiceFirst;
+}
+
+dsp::Activity Engine::activity() const
+{
+	dsp::Activity activity;
+	for (const auto &[uuid, entry] : entries_) {
+		const dsp::ChannelInput &in = entry->channel.in;
+		if (!in.audible)
+			continue;
+		const bool sounding = in.momentary > -45.0f;
+		activity.game = activity.game ||
+				((in.role == dsp::Role::Game || in.role == dsp::Role::Desktop) && sounding);
+		activity.music = activity.music || (in.role == dsp::Role::Music && sounding);
+		activity.voice = activity.voice || (in.role == dsp::Role::Voice && in.speaking);
+		activity.chat = activity.chat || (in.role == dsp::Role::Chat && in.speaking);
+	}
+	return activity;
+}
+
+void Engine::updateAutoPreset(double dt)
+{
+	// Die Aktivität wird immer mitgeschrieben, damit „Automatisch“ beim Einschalten schon Bescheid weiß
+	if (settings_.enabled)
+		autoSelector_.update(static_cast<float>(dt), activity());
+	const std::string effective = effectivePresetId();
+	if (effective == lastEffective_)
+		return;
+	lastEffective_ = effective;
+	if (settings_.preset != dsp::preset_ids::kAuto)
+		return;
+	const dsp::Preset *preset = findPreset(effective);
+	const ScenePreset *mapped = settings_.findScene(currentScene_);
+	const std::string reason = mapped && mapped->preset == effective
+					   ? textf("AutoMixer.Auto.Reason.Scene", currentScene_.c_str())
+					   : std::string(text(("AutoMixer.Auto.Reason." + effective).c_str()));
+	pushHistory(textf("AutoMixer.History.AutoPreset", preset ? preset->name.c_str() : effective.c_str(),
+			  reason.c_str()));
+}
+
+void Engine::updateCalibration(double dt)
+{
+	if (!calibrating_)
+		return;
+	for (auto &[uuid, entry] : entries_)
+		entry->collector.add(static_cast<float>(dt), entry->channel.in);
+	calibrationActivity_.update(static_cast<float>(dt), activity());
+	calibrationElapsed_ += dt;
+	if (calibrationElapsed_ >= calibrationDuration_) {
+		calibrating_ = false;
+		calibrationFinished_ = true;
+		pushHistory(text("AutoMixer.History.CalibrationDone"));
+	}
 }
 
 void Engine::updateEntry(Entry &entry, obs_source_t *source, double dt)

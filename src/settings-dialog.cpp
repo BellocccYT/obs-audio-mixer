@@ -18,6 +18,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "settings-dialog.hpp"
 
+#include "hotkeys.hpp"
 #include "presets.hpp"
 #include "roles.hpp"
 #include "text.hpp"
@@ -42,6 +43,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QVBoxLayout>
+
+#include <obs-frontend-api.h>
 
 #include <algorithm>
 
@@ -115,6 +118,7 @@ SettingsDialog::SettingsDialog(Engine *engine, QWidget *parent) : QDialog(parent
 	tabs_->addTab(createGeneralTab(), qtr("AutoMixer.Settings.General"));
 	tabs_->addTab(createRolesTab(), qtr("AutoMixer.Settings.Roles"));
 	tabs_->addTab(createPresetsTab(), qtr("AutoMixer.Settings.Presets"));
+	tabs_->addTab(createScenesTab(), qtr("AutoMixer.Settings.Scenes"));
 	tabs_->addTab(createWarningsTab(), qtr("AutoMixer.Settings.Warnings"));
 	layout->addWidget(tabs_);
 
@@ -331,6 +335,25 @@ QWidget *SettingsDialog::createPresetsTab()
 	return page;
 }
 
+QWidget *SettingsDialog::createScenesTab()
+{
+	auto *page = new QWidget;
+	auto *layout = new QVBoxLayout(page);
+	layout->addWidget(note("AutoMixer.Settings.Scenes.Text"));
+	scenes_ = new QTableWidget(0, 2);
+	scenes_->setHorizontalHeaderLabels(
+		{qtr("AutoMixer.Settings.Scenes.Scene"), qtr("AutoMixer.Settings.Scenes.Preset")});
+	scenes_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+	scenes_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+	scenes_->verticalHeader()->hide();
+	scenes_->setSelectionMode(QAbstractItemView::NoSelection);
+	layout->addWidget(scenes_, 1);
+	autoByActivity_ = new QCheckBox(qtr("AutoMixer.Settings.Scenes.Activity"));
+	autoByActivity_->setToolTip(qtr("AutoMixer.Settings.Scenes.Activity.Tip"));
+	layout->addWidget(autoByActivity_);
+	return page;
+}
+
 QWidget *SettingsDialog::createWarningsTab()
 {
 	auto *page = new QWidget;
@@ -404,6 +427,29 @@ void SettingsDialog::load()
 	roles_->resizeColumnsToContents();
 	roles_->horizontalHeader()->setSectionResizeMode(kColName, QHeaderView::Stretch);
 
+	// Szenen der aktuellen Sammlung mit ihrem Preset (oder „–“)
+	scenes_->setRowCount(0);
+	char **names = obs_frontend_get_scene_names();
+	for (char **name = names; name && *name; name++) {
+		const int row = scenes_->rowCount();
+		scenes_->insertRow(row);
+		auto *scene = new QTableWidgetItem(QString::fromUtf8(*name));
+		scene->setFlags(Qt::ItemIsEnabled);
+		scenes_->setItem(row, 0, scene);
+		auto *preset = new QComboBox;
+		preset->addItem(QStringLiteral("–"), QString());
+		for (const dsp::Preset &p : builtin_)
+			preset->addItem(QString::fromStdString(p.name), QString::fromStdString(p.id));
+		for (const dsp::Preset &p : user_)
+			preset->addItem(QString::fromStdString(p.name), QString::fromStdString(p.id));
+		const ScenePreset *mapped = settings_.findScene(*name);
+		preset->setCurrentIndex(
+			std::max(0, preset->findData(mapped ? QString::fromStdString(mapped->preset) : QString())));
+		scenes_->setCellWidget(row, 1, preset);
+	}
+	bfree(names);
+	autoByActivity_->setChecked(settings_.autoByActivity);
+
 	warnLoud_->setValue(settings_.warnings.loudLu);
 	warnLoudSeconds_->setValue(settings_.warnings.loudSeconds);
 	warnQuiet_->setValue(settings_.warnings.quietLu);
@@ -455,6 +501,19 @@ void SettingsDialog::apply()
 		source->locked = static_cast<QCheckBox *>(roles_->cellWidget(row, kColLocked))->isChecked();
 	}
 
+	// Zuordnungen der Szenen, die es gerade gibt, neu setzen; die anderer Sammlungen bleiben
+	for (int row = 0; row < scenes_->rowCount(); row++) {
+		const std::string scene = scenes_->item(row, 0)->text().toStdString();
+		const std::string preset =
+			static_cast<QComboBox *>(scenes_->cellWidget(row, 1))->currentData().toString().toStdString();
+		s.scenePresets.erase(std::remove_if(s.scenePresets.begin(), s.scenePresets.end(),
+						    [&](const ScenePreset &entry) { return entry.scene == scene; }),
+				     s.scenePresets.end());
+		if (!preset.empty())
+			s.scenePresets.push_back({scene, preset});
+	}
+	s.autoByActivity = autoByActivity_->isChecked();
+
 	s.warnings.loudLu = static_cast<float>(warnLoud_->value());
 	s.warnings.loudSeconds = static_cast<float>(warnLoudSeconds_->value());
 	s.warnings.quietLu = static_cast<float>(warnQuiet_->value());
@@ -470,6 +529,7 @@ void SettingsDialog::apply()
 		s.preset = builtin_.empty() ? std::string() : builtin_.front().id;
 	engine_->setSettings(s);
 	settings_ = s;
+	updateHotkeyDescriptions();
 }
 
 void SettingsDialog::refreshPresetList(int select)

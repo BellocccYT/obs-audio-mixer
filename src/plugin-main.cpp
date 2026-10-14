@@ -19,6 +19,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "dock.hpp"
 #include "engine.hpp"
 #include "filter.hpp"
+#include "hotkeys.hpp"
 
 #include <obs-frontend-api.h>
 #include <obs-module.h>
@@ -56,6 +57,14 @@ void introduceDock()
 	g_engine->setSettings(settings);
 }
 
+// Name der Szene im Programm (für die Zuordnung Szene → Preset)
+void updateCurrentScene()
+{
+	obs_source_t *scene = obs_frontend_get_current_scene();
+	g_engine->setCurrentScene(scene ? obs_source_get_name(scene) : "");
+	obs_source_release(scene);
+}
+
 // Auf welchen Spuren gerade gestreamt wird
 void updateStreamMixers(bool live)
 {
@@ -76,7 +85,12 @@ void onFrontendEvent(enum obs_frontend_event event, void *)
 	case OBS_FRONTEND_EVENT_FINISHED_LOADING:
 		g_engine->start();
 		updateStreamMixers(obs_frontend_streaming_active());
+		updateCurrentScene();
+		am::updateHotkeyDescriptions();
 		introduceDock();
+		break;
+	case OBS_FRONTEND_EVENT_SCENE_CHANGED:
+		updateCurrentScene();
 		break;
 	case OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGING:
 		// Gleich werden alle Quellen zerstört: vorher loslassen
@@ -84,6 +98,7 @@ void onFrontendEvent(enum obs_frontend_event event, void *)
 		break;
 	case OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGED:
 		g_engine->resume();
+		updateCurrentScene();
 		break;
 	case OBS_FRONTEND_EVENT_STREAMING_STARTED:
 		updateStreamMixers(true);
@@ -91,11 +106,17 @@ void onFrontendEvent(enum obs_frontend_event event, void *)
 	case OBS_FRONTEND_EVENT_STREAMING_STOPPED:
 		updateStreamMixers(false);
 		break;
+	case OBS_FRONTEND_EVENT_SCRIPTING_SHUTDOWN:
+		// Kommt beim Beenden direkt vor dem Abräumen aller Quellen: Callbacks abmelden, solange es sie gibt
+		if (g_dock)
+			g_dock->shutdown();
+		g_engine->suspend();
+		break;
 	case OBS_FRONTEND_EVENT_EXIT:
-		// Callbacks abmelden, solange alle Quellen noch existieren
 		if (g_dock)
 			g_dock->shutdown();
 		g_engine->stop();
+		am::stopHotkeySaving(); // OBS hat schon zum letzten Mal gespeichert
 		// Beim Entladen gibt es die Frontend-API nicht mehr; das Abmelden während der Verteilung ist erlaubt
 		obs_frontend_remove_event_callback(onFrontendEvent, nullptr);
 		g_callbackRegistered = false;
@@ -132,6 +153,7 @@ bool obs_module_load(void)
 	}
 	obs_frontend_add_event_callback(onFrontendEvent, nullptr);
 	g_callbackRegistered = true;
+	am::registerHotkeys(g_engine);
 
 	obs_log(LOG_INFO, "geladen (Version %s)", PLUGIN_VERSION);
 	return true;
@@ -141,6 +163,7 @@ void obs_module_unload(void)
 {
 	if (g_callbackRegistered)
 		obs_frontend_remove_event_callback(onFrontendEvent, nullptr);
+	am::unregisterHotkeys();
 	if (g_engine) {
 		g_engine->stop();
 		delete g_engine;

@@ -20,6 +20,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "settings.hpp"
 
+#include "dsp/auto-preset.hpp"
+#include "dsp/calibration.hpp"
 #include "dsp/preset.hpp"
 #include "dsp/regulator.hpp"
 #include "dsp/status.hpp"
@@ -99,6 +101,24 @@ struct TrackView {
 	dsp::Status status = dsp::Status::Inactive;
 };
 
+// Einmess-Assistent: Ergebnis je Quelle
+struct CalibrationSource {
+	std::string uuid;
+	std::string name;
+	dsp::Role role = dsp::Role::Ignore;
+	float targetLufs = dsp::kSilence; // Ziel am Filtereingang (vor Fader)
+	dsp::CalibrationResult result;
+};
+
+struct CalibrationView {
+	bool running = false;
+	bool finished = false;
+	float progress = 0.0f;  // 0–1
+	double remaining = 0.0; // Sekunden
+	std::vector<CalibrationSource> sources;
+	std::string suggestedPreset; // leer, wenn keins klar passt
+};
+
 struct EngineView {
 	bool running = false;
 	bool enabled = true;
@@ -153,6 +173,15 @@ public:
 	std::vector<std::string> attachFilters(bool dryRun = false);
 	int removeAllFilters(); // aus allen Quellen entfernen, schaltet auf „Nur beobachten“
 
+	// Gelernte Grundlautheiten verwerfen und neu lernen (Tastenkürzel „Neu einmessen“)
+	void relearn();
+
+	// Einmess-Assistent: misst eine Weile alle Quellen und schlägt danach Startwerte vor
+	void startCalibration(double seconds);
+	void cancelCalibration();
+	CalibrationView calibration() const;
+	void applyCalibration(bool usePreset);
+
 	// Spuren, auf denen gerade gestreamt wird (Bitmaske), 0 = nicht live
 	void setStreamMixers(uint32_t mixers);
 	// Szene im Programm (für die Zuordnung Szene → Preset)
@@ -183,7 +212,11 @@ private:
 	int streamTrack() const;
 	SourceSettings &sourceSettings(const Entry &entry);
 	const dsp::Preset *findPreset(const std::string &id) const;
+	bool presetExists(const std::string &id) const;
 	std::string effectivePresetId() const;
+	dsp::Activity activity() const;
+	void updateAutoPreset(double dt);
+	void updateCalibration(double dt);
 	bool regulating() const { return settings_.enabled && settings_.mode == Mode::Regulate; }
 
 	static void onSourceEvent(void *param, calldata_t *data);
@@ -195,6 +228,14 @@ private:
 	dsp::Regulator regulator_;
 	float blend_ = 0.0f; // 0 = nichts anwenden, 1 = Regelung voll aktiv (weicher Übergang)
 	std::string currentScene_;
+	dsp::AutoPresetSelector autoSelector_;
+	std::string lastEffective_; // zuletzt wirksames Preset (für den Verlauf bei „Automatisch“)
+
+	bool calibrating_ = false;
+	bool calibrationFinished_ = false;
+	double calibrationElapsed_ = 0.0;
+	double calibrationDuration_ = 30.0;
+	dsp::AutoPresetSelector calibrationActivity_;
 
 	std::map<std::string, std::unique_ptr<Entry>> entries_; // nach UUID
 	std::array<std::unique_ptr<TrackTap>, kTrackCount> tracks_;

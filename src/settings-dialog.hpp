@@ -39,7 +39,7 @@ class QTabWidget;
 
 namespace am {
 
-// Einstellungen: Allgemein, Rollen, Presets (Editor, Import/Export) und Warnschwellen
+// Einstellungen: Allgemein, Rollen, Presets (Editor, Import/Export), Szenen und Warnschwellen
 class SettingsDialog : public QDialog {
 	Q_OBJECT
 
@@ -53,6 +53,7 @@ private:
 	QWidget *createGeneralTab();
 	QWidget *createRolesTab();
 	QWidget *createPresetsTab();
+	QWidget *createScenesTab();
 	QWidget *createWarningsTab();
 
 	void load();
@@ -109,6 +110,10 @@ private:
 	QPushButton *presetExport_;
 	int presetIndex_ = -1;
 	bool loadingPreset_ = false;
+
+	// Szenen
+	QTableWidget *scenes_;
+	QCheckBox *autoByActivity_;
 
 	// Warnungen
 	QDoubleSpinBox *warnLoud_;

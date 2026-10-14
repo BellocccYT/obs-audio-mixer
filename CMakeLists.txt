@@ -47,12 +47,16 @@ target_sources(
   ${CMAKE_PROJECT_NAME}
   PRIVATE
     src/plugin-main.cpp
+    src/calibration-dialog.cpp
+    src/calibration-dialog.hpp
     src/dock.cpp
     src/dock.hpp
     src/engine.cpp
     src/engine.hpp
     src/filter.cpp
     src/filter.hpp
+    src/hotkeys.cpp
+    src/hotkeys.hpp
     src/level-meter.cpp
     src/level-meter.hpp
     src/presets.cpp

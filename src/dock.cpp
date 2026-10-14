@@ -18,6 +18,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "dock.hpp"
 
+#include "calibration-dialog.hpp"
 #include "level-meter.hpp"
 #include "roles.hpp"
 #include "settings-dialog.hpp"
@@ -129,9 +130,13 @@ MixerDock::MixerDock(Engine *engine, QWidget *parent) : QWidget(parent), engine_
 		else
 			engine_->setMode(Mode::Observe);
 	});
+	auto *calibrate = new QPushButton(qtr("AutoMixer.Dock.Calibrate"));
+	calibrate->setToolTip(qtr("AutoMixer.Dock.Calibrate.Tip"));
+	connect(calibrate, &QPushButton::clicked, this, [this] { CalibrationDialog::open(engine_, this); });
 	auto *settings = new QPushButton(qtr("AutoMixer.Dock.Settings"));
 	connect(settings, &QPushButton::clicked, this, &MixerDock::openSettings);
 	controls->addWidget(mode_, 1);
+	controls->addWidget(calibrate);
 	controls->addWidget(settings);
 	layout->addLayout(controls);
 
@@ -328,12 +333,14 @@ void MixerDock::refresh()
 void MixerDock::updatePresets(const EngineView &view)
 {
 	const std::vector<dsp::Preset> presets = engine_->presets();
-	std::vector<std::string> ids;
+	std::vector<std::string> ids{dsp::preset_ids::kAuto};
 	for (const dsp::Preset &preset : presets)
 		ids.push_back(preset.id);
 	if (ids != presetIds_) {
 		const QSignalBlocker blocker(preset_);
 		preset_->clear();
+		preset_->addItem(qtr("AutoMixer.Preset.auto"), QString::fromUtf8(dsp::preset_ids::kAuto));
+		preset_->setItemData(0, qtr("AutoMixer.Preset.auto.Description"), Qt::ToolTipRole);
 		for (const dsp::Preset &preset : presets) {
 			preset_->addItem(QString::fromStdString(preset.name), QString::fromStdString(preset.id));
 			preset_->setItemData(preset_->count() - 1, QString::fromStdString(preset.description),
@@ -341,6 +348,17 @@ void MixerDock::updatePresets(const EngineView &view)
 		}
 		presetIds_ = ids;
 	}
+	// Bei „Automatisch“ zeigen, welches Preset gerade wirkt
+	QString autoText = qtr("AutoMixer.Preset.auto");
+	if (view.presetId == dsp::preset_ids::kAuto) {
+		for (const dsp::Preset &preset : presets) {
+			if (preset.id == view.activePresetId)
+				autoText += QStringLiteral(" (") + QString::fromStdString(preset.name) +
+					    QStringLiteral(")");
+		}
+	}
+	if (preset_->itemText(0) != autoText)
+		preset_->setItemText(0, autoText);
 	if (!preset_->view()->isVisible()) {
 		const QSignalBlocker blocker(preset_);
 		preset_->setCurrentIndex(preset_->findData(QString::fromStdString(view.presetId)));
