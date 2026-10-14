@@ -33,13 +33,13 @@
     },
     "platformConfig": {
         "macos": {
-            "bundleId": "com.example.plugintemplate-for-obs"
+            "bundleId": "com.belloccc.obs-audio-mixer"
         }
     },
-    "name": "plugintemplate-for-obs",
-    "displayName": "Plugin Template for OBS",
-    "version": "1.0.0",
-    "author": "Your Name Here",
-    "website": "https://example.com",
-    "email": "me@example.com"
+    "name": "obs-audio-mixer",
+    "displayName": "Auto Mixer",
+    "version": "0.1.0",
+    "author": "Belloccc",
+    "website": "https://github.com/BellocccYT/obs-audio-mixer",
+    "email": "business@belloccc.de"
 }

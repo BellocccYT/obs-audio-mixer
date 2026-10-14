@@ -1,6 +1,6 @@
 /*
-Plugin Name
-Copyright (C) <Year> <Developer> <Email Address>
+Auto Mixer
+Copyright (C) 2026 Belloccc
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -21,13 +21,16 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 const char *PLUGIN_NAME = "@CMAKE_PROJECT_NAME@";
 const char *PLUGIN_VERSION = "@CMAKE_PROJECT_VERSION@";
 
+/* Kurzes, festes Präfix für alle Meldungen im OBS-Log */
+static const char *LOG_PREFIX = "auto-mixer";
+
 void obs_log(int log_level, const char *format, ...)
 {
-	size_t length = 4 + strlen(PLUGIN_NAME) + strlen(format);
+	size_t length = 4 + strlen(LOG_PREFIX) + strlen(format);
 
 	char *template = malloc(length + 1);
 
-	snprintf(template, length, "[%s] %s", PLUGIN_NAME, format);
+	snprintf(template, length, "[%s] %s", LOG_PREFIX, format);
 
 	va_list(args);
 
