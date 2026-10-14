@@ -43,6 +43,22 @@ set_target_properties(
   PROPERTIES AUTOMOC ON AUTOUIC ON AUTORCC ON
 )
 
-target_sources(${CMAKE_PROJECT_NAME} PRIVATE src/plugin-main.cpp)
+target_sources(
+  ${CMAKE_PROJECT_NAME}
+  PRIVATE
+    src/plugin-main.cpp
+    src/dock.cpp
+    src/dock.hpp
+    src/engine.cpp
+    src/engine.hpp
+    src/filter.cpp
+    src/filter.hpp
+    src/level-meter.cpp
+    src/level-meter.hpp
+    src/settings.cpp
+    src/settings.hpp
+    src/text.cpp
+    src/text.hpp
+)
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})
