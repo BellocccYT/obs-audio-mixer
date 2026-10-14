@@ -2,10 +2,9 @@ name: Push
 run-name: ${{ github.ref_name }} push run 🚀
 on:
   push:
+    # Jeder Push auf einen Branch baut und prüft das Format, Tags erstellen zusätzlich ein Release
     branches:
-      - master
-      - main
-      - 'release/**'
+      - '**'
     tags:
       - '*'
 permissions:
@@ -13,7 +12,7 @@ permissions:
 jobs:
   check-format:
     name: Check Formatting 🔍
-    if: github.ref_name == 'master' || github.ref_name == 'main'
+    if: github.ref_type == 'branch'
     uses: ./.github/workflows/check-format.yaml
     permissions:
       contents: read
